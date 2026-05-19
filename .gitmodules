@@ -1,0 +1,3 @@
+[submodule "modules/supersplat_ply_download"]
+	path = modules/supersplat_ply_download
+	url = https://github.com/guwinston/supersplat_ply_download.git
