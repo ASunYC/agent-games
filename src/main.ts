@@ -9,6 +9,8 @@ type Project = {
   name: string;
   prompt: string;
   modelName: string;
+  modelUrl?: string;
+  modelSource?: 'uploaded' | 'builtin';
   status: ProjectStatus;
   updatedAt: string;
   versions: GameVersion[];
@@ -36,6 +38,22 @@ type GenerationStep = {
 };
 
 const storageKey = 'agent-games-projects';
+const builtInTestScene = {
+  id: '23ebe85c',
+  name: '23ebe85c.ply',
+  sourceUrl: '/data/23ebe85c/23ebe85c.ply',
+  streamedUrl: '/data/23ebe85c/23ebe85c.sog',
+  previewUrl: '/data/23ebe85c/preview/meta.json',
+  previewImageUrl: '/data/23ebe85c/preview/preview.webp',
+  collisionUrl: '/data/23ebe85c/23ebe85c.collision.glb',
+  voxelUrl: '/data/23ebe85c/23ebe85c.voxel.json',
+  navmeshUrl: '/data/23ebe85c/navmesh.bin',
+  path: 'data/23ebe85c/23ebe85c.ply',
+  previewPath: 'data/23ebe85c/preview/meta.json',
+  streamedPath: 'data/23ebe85c/23ebe85c.sog',
+  collisionPath: 'data/23ebe85c/23ebe85c.collision.glb',
+  navmeshPath: 'data/23ebe85c/navmesh.bin',
+};
 const defaultPrompt =
   'Turn my abandoned building Gaussian splat into a browser FPS with exploration, collision, a navmesh, eight AI enemies, an energy-core objective, and a share link.';
 
@@ -45,16 +63,24 @@ const generationSteps: GenerationStep[] = [
     detail: 'Extract game genre, objective, camera, win condition, and asset requirements.',
   },
   {
-    label: 'Load Gaussian scene',
-    detail: 'Stream the uploaded splat into the PlayCanvas preview as the world source.',
+    label: 'Select source splat',
+    detail: 'Use the uploaded PLY/SOG or the built-in 23ebe85c.ply test scan as the input.',
   },
   {
-    label: 'Prepare collision',
-    detail: 'Approximate floors, walls, ramps, and blockers with generated collider bodies.',
+    label: 'Run splat-transform',
+    detail: 'Convert the source scan into a Streamed SOG bundle and emit collision assets.',
   },
   {
-    label: 'Build navmesh',
-    detail: 'Generate Recast navigation zones so characters can walk through the scene.',
+    label: 'Stream SOG scene',
+    detail: 'Load the generated SOG in PlayCanvas as the visible Gaussian world.',
+  },
+  {
+    label: 'Attach collision GLB',
+    detail: 'Use the generated collision GLB as static rigid bodies for floors, walls, and blockers.',
+  },
+  {
+    label: 'Bake Recast navmesh',
+    detail: 'Feed the collision GLB into Recast to create navmesh.bin for AI pathfinding.',
   },
   {
     label: 'Generate gameplay',
@@ -65,8 +91,8 @@ const generationSteps: GenerationStep[] = [
     detail: 'Place AI enemies, patrol routes, awareness states, and encounter pacing.',
   },
   {
-    label: 'Package game',
-    detail: 'Create a versioned browser build with a shareable play link.',
+    label: 'Publish build',
+    detail: 'Package the game into a shareable browser build for launch and iteration.',
   },
 ];
 
@@ -101,13 +127,12 @@ if (!app) {
 const appRoot = app;
 let projects = loadProjects();
 let activeProjectId = projects[0]?.id ?? createSeedProject().id;
-let uploadedModelName = getActiveProject().modelName;
+let uploadedModelName = getActiveProject().modelSource === 'uploaded' ? getActiveProject().modelName : '';
+let uploadedModelUrl = getActiveProject().modelSource === 'uploaded' ? getActiveProject().modelUrl || '' : '';
 let previewRuntime: GamePreviewRuntime | undefined;
 let previewMountId = 0;
-let generationState: 'idle' | 'working' | 'ready' = getActiveProject().versions.length
-  ? 'ready'
-  : 'idle';
-let currentView: AppView = 'home';
+let generationState: 'idle' | 'working' | 'ready' = 'idle';
+let currentView: AppView = window.location.hash === '#create' ? 'studio' : 'home';
 let activeGenerationStep = 0;
 let generationTimers: number[] = [];
 
@@ -121,10 +146,20 @@ function loadProjects(): Project[] {
   }
 
   try {
-    return JSON.parse(raw) as Project[];
+    const parsed = JSON.parse(raw) as Project[];
+    return parsed.map((project) => ({
+      ...project,
+      modelName: isBuiltInSceneProject(project) ? builtInTestScene.name : project.modelName,
+      modelSource: isBuiltInSceneProject(project) ? 'builtin' : project.modelSource,
+      modelUrl: project.modelUrl?.startsWith('blob:') ? '' : project.modelUrl,
+    }));
   } catch {
     return [];
   }
+}
+
+function isBuiltInSceneProject(project: Project) {
+  return project.modelName === builtInTestScene.name || Boolean(project.modelUrl?.includes('/data/23ebe85c/'));
 }
 
 function saveProjects() {
@@ -137,6 +172,8 @@ function createSeedProject(): Project {
     name: 'Abandoned Splat FPS',
     prompt: defaultPrompt,
     modelName: '',
+    modelUrl: '',
+    modelSource: undefined,
     status: 'draft',
     updatedAt: new Date().toISOString(),
     versions: [],
@@ -206,9 +243,16 @@ function render() {
   const canvas = document.querySelector<HTMLCanvasElement>('#preview-canvas');
 
   if (canvas) {
+    const sceneAssets = resolveSceneAssets(project);
     const previewState = {
       status: project.status,
       modelName: project.modelName,
+      sceneLabel: sceneSourceLabel(project),
+      modelUrl: sceneAssets.streamedUrl,
+      fallbackModelUrl: sceneAssets.sourceUrl,
+      flipVertical: sceneAssets.flipVertical,
+      collisionUrl: sceneAssets.collisionUrl,
+      navmeshUrl: sceneAssets.navmeshUrl,
       versionCount: project.versions.length,
       mechanics,
       generationStep:
@@ -244,8 +288,15 @@ function bindEvents() {
     }
 
     const project = getActiveProject();
+    if (uploadedModelUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(uploadedModelUrl);
+    }
+
+    uploadedModelUrl = URL.createObjectURL(file);
     uploadedModelName = file.name;
     project.modelName = file.name;
+    project.modelUrl = uploadedModelUrl;
+    project.modelSource = 'uploaded';
     project.updatedAt = new Date().toISOString();
     currentView = 'studio';
     saveProjects();
@@ -272,6 +323,8 @@ function bindEvents() {
       name: `Splat Game ${projects.length + 1}`,
       prompt: defaultPrompt,
       modelName: '',
+      modelUrl: '',
+      modelSource: undefined,
       status: 'draft',
       updatedAt: now,
       versions: [],
@@ -279,7 +332,11 @@ function bindEvents() {
 
     projects = [project, ...projects];
     activeProjectId = project.id;
+    if (uploadedModelUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(uploadedModelUrl);
+    }
     uploadedModelName = '';
+    uploadedModelUrl = '';
     generationState = 'idle';
     activeGenerationStep = 0;
     currentView = 'studio';
@@ -298,17 +355,19 @@ function bindEvents() {
     link.addEventListener('click', (event) => {
       event.preventDefault();
       currentView = link.dataset.view === 'studio' ? 'studio' : 'home';
+      window.history.replaceState(null, '', currentView === 'studio' ? '#create' : '#home');
       render();
     });
   });
 
   document.querySelectorAll<HTMLButtonElement>('[data-project-id]').forEach((button) => {
     button.addEventListener('click', () => {
-      activeProjectId = button.dataset.projectId ?? activeProjectId;
-      uploadedModelName = getActiveProject().modelName;
-      generationState = 'ready';
-      activeGenerationStep = generationSteps.length;
-      currentView = 'studio';
+    activeProjectId = button.dataset.projectId ?? activeProjectId;
+    uploadedModelName = getActiveProject().modelSource === 'uploaded' ? getActiveProject().modelName : '';
+    uploadedModelUrl = getActiveProject().modelSource === 'uploaded' ? getActiveProject().modelUrl || '' : '';
+    generationState = 'ready';
+    activeGenerationStep = generationSteps.length;
+    currentView = 'studio';
       render();
     });
   });
@@ -324,7 +383,7 @@ function startGeneration(prompt: string) {
   generationSteps.forEach((_, index) => {
     const timer = window.setTimeout(() => {
       activeGenerationStep = index;
-      render();
+      refreshGenerationProgress();
     }, index * 620);
     generationTimers.push(timer);
   });
@@ -344,16 +403,41 @@ function clearGenerationTimers() {
   generationTimers = [];
 }
 
+function refreshGenerationProgress() {
+  const status = document.querySelector<HTMLElement>('[data-generation-status]');
+  if (status) {
+    status.textContent = statusMessage(getActiveProject().status, generationState);
+  }
+
+  document.querySelector('.preview-title span')?.replaceChildren(
+    document.createTextNode(generationSteps[activeGenerationStep]?.label ?? 'Generating'),
+  );
+
+  document.querySelectorAll<HTMLElement>('.pipeline-list li').forEach((item, index) => {
+    const state =
+      generationState === 'ready' || activeGenerationStep > index
+        ? 'done'
+        : generationState === 'working' && activeGenerationStep === index
+          ? 'active'
+          : 'pending';
+
+    item.classList.remove('active', 'done', 'pending');
+    item.classList.add(state);
+  });
+}
+
 function generateGame(prompt: string) {
   const project = getActiveProject();
   const now = new Date().toISOString();
-  const modelName = uploadedModelName || project.modelName || 'abandoned-scene.sog';
+  const usingBuiltIn = !uploadedModelName && project.modelSource !== 'uploaded';
+  const modelName = usingBuiltIn ? builtInTestScene.name : uploadedModelName || project.modelName;
+  const modelUrl = usingBuiltIn ? builtInTestScene.sourceUrl : resolveSceneAssets(project).sourceUrl;
   const versionNumber = project.versions.length + 1;
   const title = extractTitle(prompt);
   const version: GameVersion = {
     id: crypto.randomUUID(),
     title,
-    summary: `${title} uses ${modelName} as a streamed Gaussian scene with collision, Recast navigation, AI enemies, and a browser share build.`,
+    summary: `${title} uses ${modelName} as the Gaussian scene source with collision, Recast navigation, AI enemies, and a browser share build.`,
     mechanics: buildMechanics(prompt),
     shareUrl: `https://agent.games/play/${project.id.slice(0, 8)}-v${versionNumber}`,
     createdAt: now,
@@ -362,6 +446,8 @@ function generateGame(prompt: string) {
   project.prompt = prompt;
   project.name = title;
   project.modelName = modelName;
+  project.modelUrl = modelUrl;
+  project.modelSource = usingBuiltIn ? 'builtin' : 'uploaded';
   project.status = 'generated';
   project.updatedAt = now;
   project.versions = [version, ...project.versions];
@@ -443,16 +529,23 @@ function homeView(generatedShelf: Project[]) {
 
 function studioView(project: Project, latestVersion: GameVersion | undefined, mechanics: string[]) {
   const hasPreview = generationState === 'working' || generationState === 'ready';
+  const commandLines = generationCommand(project);
   return `
     <section class="studio-header" aria-label="Create studio introduction">
-      <div>
+      <div class="studio-title">
         <p class="kicker">Create Studio</p>
         <h1>Build a game from your splat</h1>
       </div>
-      <p>
-        Describe the game, upload a Gaussian scene, then watch the generator load the world,
-        create collision and navigation, and add gameplay with NPCs.
-      </p>
+      <div class="studio-summary" aria-label="Studio generation summary">
+        <span>Natural language to PlayCanvas FPS</span>
+        <strong>${h(sceneSourceLabel(project))}</strong>
+        <div class="studio-flow">
+          <span>Prompt</span>
+          <span>SOG stream</span>
+          <span>Collision</span>
+          <span>NPC game</span>
+        </div>
+      </div>
     </section>
 
     <section class="studio-grid" aria-label="Create game controls">
@@ -466,74 +559,123 @@ function studioView(project: Project, latestVersion: GameVersion | undefined, me
         <div class="create-actions">
           <label class="upload-pill">
             <input id="model-upload" type="file" accept=".ply,.sog,.spz,.ksplat" />
-            <span>${uploadIcon()} ${h(project.modelName || 'Upload splat')}</span>
+            <span>${uploadIcon()} ${h(project.modelName || `Use built-in ${builtInTestScene.name}`)}</span>
           </label>
           <button class="generate-button" type="submit">
             ${sparkIcon()} Generate game
           </button>
         </div>
+        ${hasPreview ? previewCanvasPanel(project, latestVersion) : waitingCanvasPanel()}
       </form>
 
       <div class="pipeline-panel">
         <div class="create-copy">
           <span>Generation process</span>
-          <strong>${statusMessage(project.status, generationState)}</strong>
+          <strong data-generation-status>${statusMessage(project.status, generationState)}</strong>
         </div>
-        <ol class="pipeline-list">
-          ${generationSteps.map((step, index) => generationStepRow(step, index)).join('')}
-        </ol>
+        <div class="asset-source ${project.modelSource === 'builtin' || !project.modelName ? 'builtin' : 'uploaded'}">
+          <span>Scene source</span>
+          <strong>${h(sceneSourceLabel(project))}</strong>
+          <code>${h(sceneSourcePath(project))}</code>
+        </div>
+        <div class="asset-source asset-products">
+          <span>Generated assets</span>
+          <strong>${h(generatedAssetSummary(project))}</strong>
+          <code>${h(generatedAssetPaths(project))}</code>
+        </div>
+        <div class="audit-list" aria-label="Generation implementation audit">
+          ${generationAuditRows().map((item) => `
+            <div class="${item.status}">
+              <span>${h(item.statusLabel)}</span>
+              <strong>${h(item.label)}</strong>
+              <p>${h(item.detail)}</p>
+            </div>
+          `).join('')}
+        </div>
+        <div class="command-block">
+          <span>Reference command</span>
+          <pre>${h(commandLines)}</pre>
+        </div>
       </div>
     </section>
 
-    ${
-      hasPreview
-        ? `
-          <section class="studio-strip" aria-label="Create studio">
-            <div class="preview-card">
-              <canvas id="preview-canvas" aria-label="Generated game preview"></canvas>
-              <div class="preview-badge">PlayCanvas preview</div>
-              <div class="preview-title">
-                <span>${generationState === 'working' ? h(generationSteps[activeGenerationStep]?.label ?? 'Generating') : statusLabel(project.status)}</span>
-                <strong>${h(latestVersion?.title ?? 'Creating 3D scene')}</strong>
-              </div>
-            </div>
-            <div class="build-panel">
-              <p class="kicker">Generated build</p>
-              <h2>${h(generationState === 'working' ? 'Building game...' : project.name)}</h2>
-              <p>${h(latestVersion?.summary ?? 'The game build will appear here after the generation pipeline finishes.')}</p>
-              <div class="mechanics">
-                ${mechanics.map((item) => `<span>${h(item)}</span>`).join('')}
-              </div>
-              <div class="share-line">
-                <code>${h(latestVersion?.shareUrl ?? 'Waiting for package step')}</code>
-                <button class="publish-button" data-action="publish" ${latestVersion ? '' : 'disabled'}>Publish</button>
-              </div>
-            </div>
-          </section>
-        `
-        : `
-          <section class="studio-awaiting" aria-label="Generation waiting state">
-            <div>
-              <p class="kicker">Waiting for generation</p>
-              <h2>No 3D canvas yet</h2>
-              <p>
-                Click Generate game to create the PlayCanvas scene. The agent will then load the splat,
-                build collision, create navigation, and add gameplay content step by step.
-              </p>
-            </div>
-            <button class="generate-button" type="submit" form="creator-form">
-              ${sparkIcon()} Generate game
-            </button>
-          </section>
-        `
-    }
+    <section class="pipeline-rail" aria-label="Generation steps">
+      <div class="pipeline-rail-head">
+        <p class="kicker">Generation steps</p>
+        <strong>Prompt to playable browser build</strong>
+      </div>
+      <ol class="pipeline-list">
+        ${generationSteps.map((step, index) => generationStepRow(step, index)).join('')}
+      </ol>
+    </section>
+
+    ${hasPreview ? buildPanel(project, latestVersion, mechanics) : ''}
   `;
 }
 
+function previewCanvasPanel(project: Project, latestVersion: GameVersion | undefined) {
+  const previewStyle = ` style="--preview-image: url('${builtInTestScene.previewImageUrl}')"`;
+
+  return `
+    <section class="preview-card inline-preview" aria-label="Live PlayCanvas generation preview"${previewStyle}>
+      <canvas id="preview-canvas" aria-label="Generated game preview"></canvas>
+      <div class="preview-badge">PlayCanvas preview</div>
+      <div class="preview-load" data-preview-status>Preparing PlayCanvas scene</div>
+      <div class="preview-title">
+        <span>${generationState === 'working' ? h(generationSteps[activeGenerationStep]?.label ?? 'Generating') : statusLabel(project.status)}</span>
+        <strong>${h(latestVersion?.title ?? 'Creating 3D scene')}</strong>
+      </div>
+    </section>
+  `;
+}
+
+function buildPanel(project: Project, latestVersion: GameVersion | undefined, mechanics: string[]) {
+  return `
+    <section class="build-strip" aria-label="Generated build">
+      <div class="build-panel">
+        <p class="kicker">Generated build</p>
+        <h2>${h(generationState === 'working' ? 'Building game...' : project.name)}</h2>
+        <p>${h(latestVersion?.summary ?? 'The game build will appear here after the generation pipeline finishes.')}</p>
+        <div class="mechanics">
+          ${mechanics.map((item) => `<span>${h(item)}</span>`).join('')}
+        </div>
+        <div class="share-line">
+          <code>${h(latestVersion?.shareUrl ?? 'Waiting for package step')}</code>
+          <button class="publish-button" data-action="publish" ${latestVersion ? '' : 'disabled'}>Publish</button>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function waitingCanvasPanel() {
+  return `
+    <section class="canvas-waiting" aria-label="Generation waiting state">
+      <p class="kicker">Waiting for generation</p>
+      <h2>No 3D canvas yet</h2>
+      <p>
+        Click Generate game to create the PlayCanvas scene. The agent will then load the splat,
+        build collision, create navigation, and add gameplay content step by step.
+      </p>
+    </section>
+  `;
+}
+
+function generationCommand(project: Project) {
+  const sourceAsset = project.modelSource === 'uploaded' && project.modelName ? project.modelName : builtInTestScene.name;
+  const sourceStem = sourceAsset.replace(/\.[^.]+$/, '');
+
+  return [
+    `splat-transform ${sourceAsset} \\`,
+    `  --seed-pos 0,1,0 --voxel-params 0.05,0.1 --voxel-carve 1.6,0.2 -K \\`,
+    `  ${sourceStem}.sog`,
+    `recast ${sourceStem}.collision.glb navmesh.bin`,
+  ].join('\n');
+}
+
 function generationStepRow(step: GenerationStep, index: number) {
-  const generated = getActiveProject().status !== 'draft' && generationState !== 'working';
   const status =
-    generated || generationState === 'ready' || activeGenerationStep > index
+    generationState === 'ready' || activeGenerationStep > index
       ? 'done'
       : generationState === 'working' && activeGenerationStep === index
         ? 'active'
@@ -561,6 +703,101 @@ function emptyRecommendation() {
 
 function defaultMechanics() {
   return ['FPS movement', 'Splat scene', 'Collision GLB', 'Recast navmesh', '8 AI NPCs', 'Share build'];
+}
+
+function sceneSourceLabel(project: Project) {
+  if (project.modelSource === 'uploaded' && project.modelName) {
+    return `Uploaded asset: ${project.modelName}`;
+  }
+
+  if (project.modelSource === 'builtin' || !project.modelName) {
+    return `Built-in test asset: ${builtInTestScene.name}`;
+  }
+
+  return project.modelName;
+}
+
+function sceneSourcePath(project: Project) {
+  if (project.modelSource === 'uploaded' && project.modelName) {
+    return 'Browser upload, used for this generation session';
+  }
+
+  return builtInTestScene.path;
+}
+
+function generatedAssetSummary(project: Project) {
+  const stem = project.modelSource === 'uploaded' && project.modelName
+    ? project.modelName.replace(/\.[^.]+$/, '')
+    : builtInTestScene.id;
+
+  return `${stem}.sog + ${stem}.collision.glb + navmesh.bin`;
+}
+
+function generatedAssetPaths(project: Project) {
+  if (project.modelSource === 'uploaded' && project.modelName) {
+    const stem = project.modelName.replace(/\.[^.]+$/, '');
+    return `${stem}.sog | ${stem}.collision.glb | navmesh.bin`;
+  }
+
+  return `${builtInTestScene.streamedPath} | ${builtInTestScene.collisionPath} | ${builtInTestScene.navmeshPath}`;
+}
+
+function generationAuditRows() {
+  return [
+    {
+      status: 'ready',
+      statusLabel: 'Ready',
+      label: 'SOG / preview package',
+      detail: 'The built-in PLY has been converted into SOG plus a PlayCanvas-readable preview package.',
+    },
+    {
+      status: 'ready',
+      statusLabel: 'Ready',
+      label: 'Collision GLB',
+      detail: 'splat-transform emitted 23ebe85c.collision.glb from the source splat.',
+    },
+    {
+      status: 'pending',
+      statusLabel: 'Pending',
+      label: 'Recast navmesh.bin',
+      detail: 'The UI shows the step, but navmesh.bin has not been generated yet.',
+    },
+    {
+      status: 'pending',
+      statusLabel: 'Pending',
+      label: 'NPC / character generation',
+      detail: 'The prompt asks for eight AI enemies; no real character assets or behavior tree are spawned yet.',
+    },
+  ];
+}
+
+function resolveSceneAssets(project: Project) {
+  if (project.modelSource === 'uploaded') {
+    const sourceUrl = uploadedModelUrl || project.modelUrl || builtInTestScene.sourceUrl;
+    const uploadedIsBuiltIn =
+      project.modelName === builtInTestScene.name || sourceUrl.includes('/data/23ebe85c/');
+    const uploadedIsStreamable = /\.(sog|ply)$/i.test(project.modelName);
+
+    return {
+      sourceUrl,
+      streamedUrl: uploadedIsBuiltIn
+        ? builtInTestScene.previewUrl
+        : uploadedIsStreamable
+          ? sourceUrl
+          : builtInTestScene.streamedUrl,
+      collisionUrl: builtInTestScene.collisionUrl,
+      navmeshUrl: builtInTestScene.navmeshUrl,
+      flipVertical: uploadedIsBuiltIn,
+    };
+  }
+
+  return {
+    sourceUrl: project.modelUrl || builtInTestScene.sourceUrl,
+    streamedUrl: builtInTestScene.previewUrl,
+    collisionUrl: builtInTestScene.collisionUrl,
+    navmeshUrl: builtInTestScene.navmeshUrl,
+    flipVertical: true,
+  };
 }
 
 function buildMechanics(prompt: string) {
@@ -600,6 +837,10 @@ function statusLabel(status: ProjectStatus) {
 }
 
 function statusMessage(status: ProjectStatus, state: typeof generationState) {
+  if (state === 'idle') {
+    return 'Click Generate to create the 3D canvas.';
+  }
+
   if (state === 'working') {
     return 'Building your game card...';
   }
