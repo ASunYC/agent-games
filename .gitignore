@@ -5,3 +5,5 @@ data
 *.log
 .playwright-cli
 output
+workspace/*
+!workspace/.gitignore

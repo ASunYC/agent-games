@@ -15,6 +15,9 @@
     "vite": "^6.1.0"
   },
   "dependencies": {
-    "playcanvas": "^2.18.1"
+    "@earendil-works/pi-coding-agent": "^0.75.4",
+    "@gltf-transform/core": "^4.3.0",
+    "playcanvas": "^2.18.1",
+    "recast-navigation": "^0.43.1"
   }
 }

@@ -8,7 +8,6 @@ const sceneDir = join(root, 'data', '23ebe85c');
 const source = join(sceneDir, '23ebe85c.ply');
 const streamed = join(sceneDir, '23ebe85c.sog');
 const previewMeta = join(sceneDir, 'preview', 'meta.json');
-const previewImage = join(sceneDir, 'preview', 'preview.webp');
 const voxel = join(sceneDir, '23ebe85c.voxel.json');
 
 if (!existsSync(source)) {
@@ -19,8 +18,7 @@ if (
   existsSync(streamed) &&
   existsSync(join(sceneDir, '23ebe85c.collision.glb')) &&
   existsSync(voxel) &&
-  existsSync(previewMeta) &&
-  existsSync(previewImage)
+  existsSync(previewMeta)
 ) {
   console.log('Built-in SOG, collision GLB, and voxel data already exist.');
   process.exit(0);
@@ -31,22 +29,6 @@ if (!existsSync(streamed)) {
 }
 if (!existsSync(previewMeta)) {
   run('npx', ['@playcanvas/splat-transform', '-w', source, previewMeta]);
-}
-if (!existsSync(previewImage)) {
-  run('npx', [
-    '@playcanvas/splat-transform',
-    '-w',
-    source,
-    '--camera',
-    '0,5.3,17.2',
-    '--look-at',
-    '0,1,0',
-    '--up',
-    '0,-1,0',
-    '--resolution',
-    '1280x720',
-    previewImage,
-  ]);
 }
 if (
   !run('npx', [

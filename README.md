@@ -1,27 +1,31 @@
-# Agent Games - Natural-Language Gaussian Splat Game Studio
+# Agent Games - AI Gaussian Splat Game Studio
 
-Create browser games from a natural-language prompt and a Gaussian splat scene.
+Build browser games from a natural-language prompt and a Gaussian splat scene.
 
-`agent-games` is an Astrocade-inspired prototype. The first workflow turns a
-Gaussian splat scan into a PlayCanvas FPS generation surface: stream the splat,
-prepare collision, plan Recast navigation, add gameplay/NPC steps, and publish a
-shareable browser build.
+`agent-games` is an Astrocade-inspired prototype for generating PlayCanvas FPS
+game projects. A user can describe a game, upload or reuse a `.ply` Gaussian
+splat, watch the generator create the 3D preview, and publish a local playable
+build card back to the Home gallery.
 
 ## Trigger
 
 Use this project when you want to:
 
 - Prototype an AI game-generation platform
-- Let users describe a game in natural language
-- Upload or reuse a Gaussian splat scene as the game world
-- Test a PlayCanvas Gaussian splat FPS workflow
-- Track generation stages such as SOG streaming, collision, navmesh, NPCs, and publishing
+- Turn natural language into a browser game project
+- Use a Gaussian splat scene as the game world
+- Convert splats into streamed SOG assets for PlayCanvas
+- Generate collision GLB and Recast `navmesh.bin` outputs
+- Keep every project run and intermediate artifact in a workspace folder
+- Publish generated versions back into the Home gallery
 
 ## How It Works
 
-The app is a Vite + TypeScript single-page prototype. It stores projects in
-`localStorage`, renders an Astrocade-style lobby, and provides a Create Studio
-where a user can describe a game and generate a PlayCanvas preview.
+The app is a Vite + TypeScript single-page studio with a local Vite middleware
+API. The browser handles the lobby, Create flow, PlayCanvas preview, upload UI,
+generation status, and publishing controls. The local server middleware owns
+workspace folders, splat conversion, Recast navmesh export, generated plans, and
+published HTML files.
 
 The built-in test scene lives at:
 
@@ -29,25 +33,25 @@ The built-in test scene lives at:
 data/23ebe85c/23ebe85c.ply
 ```
 
-If the user does not upload a model, the Create flow uses that built-in PLY. The
-local asset script converts it into PlayCanvas-readable streamed assets and
-collision outputs.
+If the user clicks `Generate game` without uploading a model, the project copies
+that built-in PLY into the current project workspace and uses the precomputed
+SOG, voxel JSON, and collision GLB from `data/23ebe85c`. It then creates a
+Recast `navmesh.bin` for the generated run.
 
-## Current Features
+## Workflow
 
-- Astrocade-style Home and Create views
-- Natural-language game prompt form
-- Gaussian model upload surface for `.ply`, `.sog`, `.spz`, and `.ksplat`
-- Built-in test PLY fallback
-- PlayCanvas preview area with drag and wheel interaction
-- Streamed SOG preview package loading through PlayCanvas `gsplat`
-- Generation status rail for prompt, SOG, collision, navmesh, gameplay, NPCs, and publish
-- Local generation audit showing which assets are ready and which are pending
-- Local project persistence, generated versions, publish state, and share-link mock
+Each generation run follows the PlayCanvas Gaussian splat pipeline:
 
-## Gaussian Splat Pipeline
+1. Read the prompt and create a project run.
+2. Copy the uploaded or built-in PLY into `workspace/<projectId>/source`.
+3. Convert the source splat into a streamed SOG bundle.
+4. Generate voxel and collision outputs with `splat-transform`.
+5. Build `navmesh.bin` with `recast-navigation`.
+6. Ask the Pi agent layer for a game plan when an LLM provider key is available.
+7. Write the generated plan, snapshot, local playable HTML, and manifest.
+8. Publish the latest version into `workspace/<projectId>/published`.
 
-The intended generation pipeline follows the PlayCanvas Gaussian splat workflow:
+Reference `splat-transform` command:
 
 ```bash
 splat-transform scene.ply \
@@ -58,19 +62,59 @@ splat-transform scene.ply \
   scene.sog
 ```
 
-The command produces:
+The command emits a streamed SOG bundle plus collision outputs such as:
 
-- `scene.sog` - streamed Gaussian scene bundle
-- `scene.collision.glb` - collision mesh for static rigid bodies
-- voxel data sidecars used during collision generation
+- `scene.sog`
+- `scene.collision.glb`
+- voxel sidecars used by the collision pass
 
-The next intended step is:
+## Workspace Layout
 
-```bash
-recast scene.collision.glb navmesh.bin
+Generated projects are written to ignored local folders:
+
+```text
+workspace/
+  <projectId>/
+    manifest.json
+    source/
+      <uploaded-or-built-in>.ply
+    runs/
+      <runId>/
+        source/
+          <source>.ply
+        scene.sog
+        scene.voxel.json
+        scene.collision.glb
+        navmesh.bin
+        gameplay-runtime.json
+        behavior-tree.json
+        generation-plan.json
+        snapshot.svg
+        publish/
+          index.html
+    published/
+      index.html
 ```
 
-`navmesh.bin` will be used by generated NPCs for pathfinding.
+`workspace/` is intentionally ignored except for `workspace/.gitignore`.
+
+## AI Planning
+
+The local generation middleware integrates the Pi coding-agent package:
+
+```text
+@earendil-works/pi-coding-agent
+```
+
+When a supported provider key is present, the server calls Pi in JSON mode to
+turn the prompt into a structured game plan:
+
+- `OPENAI_API_KEY`
+- `ANTHROPIC_API_KEY`
+- `OPENROUTER_API_KEY`
+
+If no key is configured, the app uses a deterministic local fallback plan so the
+pipeline can still create SOG, collision, navmesh, snapshot, and publish outputs.
 
 ## Available Commands
 
@@ -104,8 +148,8 @@ http://localhost:5176/#create
 npm run build:splat-assets
 ```
 
-This script uses `@playcanvas/splat-transform` via `npx` and writes ignored
-local artifacts next to `data/23ebe85c/23ebe85c.ply`.
+This uses `@playcanvas/splat-transform` through `npx` and writes ignored local
+artifacts next to `data/23ebe85c/23ebe85c.ply`.
 
 Expected local outputs include:
 
@@ -115,19 +159,14 @@ Expected local outputs include:
 - `data/23ebe85c/preview/meta.json`
 - `data/23ebe85c/preview/*.webp`
 
-### 4. Typecheck
+### 4. Verify
 
 ```bash
 npm run typecheck
-```
-
-### 5. Build
-
-```bash
 npm run build
 ```
 
-### 6. Preview Production Build
+### 5. Preview Production Build
 
 ```bash
 npm run preview
@@ -136,18 +175,8 @@ npm run preview
 ## Quick Start Workflow
 
 ```bash
-# Install dependencies
 npm install
-
-# Build local splat artifacts for the built-in test scene
-npm run build:splat-assets
-
-# Start the Create Studio
 npm run dev -- --host 0.0.0.0 --port 5176
-
-# Verify the code
-npm run typecheck
-npm run build
 ```
 
 Then open:
@@ -156,28 +185,54 @@ Then open:
 http://localhost:5176/#create
 ```
 
-Click `Generate game`. If no model is uploaded, the app uses the built-in
-`23ebe85c.ply` test scene and loads its streamed preview package.
+Click `Generate game`. If no model is uploaded, the Create flow uses the built-in
+`23ebe85c.ply` test scene. The 3D preview appears first, then the generation
+process resolves SOG, collision, navmesh, gameplay plan, NPC plan, and local
+publish artifacts.
+
+## Current Features
+
+- Astrocade-style Home and Create views
+- Sky-blue visual theme and responsive layout
+- Natural-language prompt form
+- Upload support for `.ply`, `.sog`, `.spz`, and `.ksplat`
+- Built-in PLY fallback from `data/23ebe85c`
+- PlayCanvas Gaussian splat preview with mouse drag and wheel interaction
+- Local project API for ensure, upload, generate, publish, and asset serving
+- Per-project workspace folders with source and run artifacts
+- Streamed SOG output for generated runs
+- Collision GLB output from the splat pipeline
+- Recast `navmesh.bin` generation
+- Pi agent planning integration with provider-key fallback
+- PlayCanvas runtime scaffold with player movement, objective HUD, NPC patrol/chase states, and tagging
+- Generated snapshot card for Home
+- Local publish output under `workspace/<projectId>/published`
 
 ## Implementation Status
 
 Ready:
 
-- Vite + TypeScript app shell
-- Create Studio UI
-- Built-in PLY test scene support
-- Streamed SOG preview package for the built-in scene
-- Collision GLB generated with `splat-transform`
-- PlayCanvas preview mounting and mouse interaction
+- Create Studio UI and Home gallery
+- Built-in test PLY flow
+- Uploaded file storage in project workspaces
+- SOG, voxel, collision, and navmesh run artifacts
+- Generated plans, snapshots, manifests, and published HTML
+- Gameplay runtime specs and behavior-tree JSON for player/NPC preview state
+- PlayCanvas preview loading the generated SOG
+
+Partially ready:
+
+- NPCs are spawned as PlayCanvas runtime markers with patrol/chase/tagged states
+- FPS gameplay is playable as an embedded preview scaffold with WASD movement, mouse look, tagging, ammo, and objective HUD
+- Collision GLB is produced and tracked, but not yet attached as a live rigid body
+- Recast navmesh uses a lightweight proxy when the full collision mesh is too large for the WASM generator
 
 Pending:
 
-- Real server-side generation pipeline for user uploads
-- Recast `navmesh.bin` generation
-- Real FPS player controller
-- Real NPC character assets and behavior trees
-- Collision GLB attachment as PlayCanvas rigid bodies
-- Publish pipeline that emits a deployable game URL
+- Production-quality character meshes, animation clips, weapons, pickups, and win-state presentation
+- Full physics-backed collision response inside the PlayCanvas runtime
+- Runtime navmesh debug visualization and NPC path queries
+- Deployment to an external hosting target
 
 ## Submodules
 
@@ -193,9 +248,9 @@ git submodule update --init --recursive
 
 ## Acknowledgements
 
-Thanks to `guwinston/supersplat_ply_download` for providing a practical reference
-for downloading public SuperSplat scene payloads and converting them to `PLY`.
-It is useful for the `agent-games` Gaussian splat ingestion workflow,
+Thanks to `guwinston/supersplat_ply_download` for providing a practical
+reference for downloading public SuperSplat scene payloads and converting them
+to `PLY`. It is useful for the `agent-games` Gaussian splat ingestion workflow,
 especially when users start from public SuperSplat scene URLs.
 
 The upstream project is a non-official tool and notes that scene content, model
@@ -207,12 +262,12 @@ Related upstream projects:
 - SuperSplat: [https://superspl.at/](https://superspl.at/)
 - PlayCanvas Engine: [https://github.com/playcanvas/engine](https://github.com/playcanvas/engine)
 - PlayCanvas `splat-transform`: [https://github.com/playcanvas/splat-transform](https://github.com/playcanvas/splat-transform)
-- Recast Navigation: [https://github.com/recastnavigation/recastnavigation](https://github.com/recastnavigation/recastnavigation)
+- Recast Navigation JS: [https://github.com/isaac-mason/recast-navigation-js](https://github.com/isaac-mason/recast-navigation-js)
+- Pi: [https://pi.dev/docs/latest](https://pi.dev/docs/latest)
 
 ## Notes
 
-- `data/` is intentionally ignored because splat assets and generated artifacts can be large.
+- `data/` is intentionally ignored because splat assets can be very large.
+- `workspace/` is intentionally ignored because generated projects and runs are local artifacts.
 - `output/` and `.playwright-cli/` are ignored verification artifacts.
-- Built-in local artifacts are generated from `data/23ebe85c/23ebe85c.ply`.
-- The current publish URL is a mock until a real deployment pipeline is added.
-- The current NPC/navmesh steps are represented in the UI but not fully implemented.
+- The dev server used during local testing runs on `http://localhost:5176`.

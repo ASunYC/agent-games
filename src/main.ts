@@ -14,6 +14,7 @@ type Project = {
   status: ProjectStatus;
   updatedAt: string;
   versions: GameVersion[];
+  publishedUrl?: string;
 };
 
 type GameVersion = {
@@ -23,6 +24,18 @@ type GameVersion = {
   mechanics: string[];
   shareUrl: string;
   createdAt: string;
+  sourceUrl?: string;
+  streamedUrl?: string;
+  collisionUrl?: string;
+  navmeshUrl?: string;
+  runtimeUrl?: string;
+  behaviorTreeUrl?: string;
+  snapshotUrl?: string;
+  publishUrl?: string;
+  workspacePath?: string;
+  npcArchetypes?: Array<{ name: string; role: string; behavior: string }>;
+  objective?: string;
+  publishTag?: string;
 };
 
 type ShowcaseGame = {
@@ -37,6 +50,40 @@ type GenerationStep = {
   detail: string;
 };
 
+type WorkspaceProjectRecord = {
+  id: string;
+  name: string;
+  prompt: string;
+  modelName: string;
+  modelUrl?: string;
+  modelSource?: 'uploaded' | 'builtin';
+  status: ProjectStatus;
+  updatedAt: string;
+  runs?: GameVersion[];
+  publishedUrl?: string;
+};
+
+type WorkspaceGenerationPlan = {
+  title: string;
+  summary: string;
+  mechanics: string[];
+  npcArchetypes: Array<{ name: string; role: string; behavior: string }>;
+  objective: string;
+  publishTag: string;
+  snapshotCaption: string;
+};
+
+type WorkspaceGenerationResult = {
+  project: WorkspaceProjectRecord;
+  version: GameVersion;
+  plan: WorkspaceGenerationPlan;
+};
+
+type WorkspacePublishResult = {
+  project: WorkspaceProjectRecord;
+  version: GameVersion;
+};
+
 const storageKey = 'agent-games-projects';
 const builtInTestScene = {
   id: '23ebe85c',
@@ -44,7 +91,6 @@ const builtInTestScene = {
   sourceUrl: '/data/23ebe85c/23ebe85c.ply',
   streamedUrl: '/data/23ebe85c/23ebe85c.sog',
   previewUrl: '/data/23ebe85c/preview/meta.json',
-  previewImageUrl: '/data/23ebe85c/preview/preview.webp',
   collisionUrl: '/data/23ebe85c/23ebe85c.collision.glb',
   voxelUrl: '/data/23ebe85c/23ebe85c.voxel.json',
   navmeshUrl: '/data/23ebe85c/navmesh.bin',
@@ -135,6 +181,8 @@ let generationState: 'idle' | 'working' | 'ready' = 'idle';
 let currentView: AppView = window.location.hash === '#create' ? 'studio' : 'home';
 let activeGenerationStep = 0;
 let generationTimers: number[] = [];
+let pendingUploadPromise: Promise<void> | undefined;
+let generationToken = 0;
 
 render();
 
@@ -149,6 +197,7 @@ function loadProjects(): Project[] {
     const parsed = JSON.parse(raw) as Project[];
     return parsed.map((project) => ({
       ...project,
+      versions: Array.isArray(project.versions) ? project.versions.map((version) => normalizeVersion(version)) : [],
       modelName: isBuiltInSceneProject(project) ? builtInTestScene.name : project.modelName,
       modelSource: isBuiltInSceneProject(project) ? 'builtin' : project.modelSource,
       modelUrl: project.modelUrl?.startsWith('blob:') ? '' : project.modelUrl,
@@ -243,16 +292,20 @@ function render() {
   const canvas = document.querySelector<HTMLCanvasElement>('#preview-canvas');
 
   if (canvas) {
-    const sceneAssets = resolveSceneAssets(project);
+    const sceneAssets = resolveSceneAssets(project, latestVersion, generationState);
     const previewState = {
       status: project.status,
       modelName: project.modelName,
       sceneLabel: sceneSourceLabel(project),
       modelUrl: sceneAssets.streamedUrl,
-      fallbackModelUrl: sceneAssets.sourceUrl,
+      fallbackModelUrl: sceneAssets.fallbackUrl,
       flipVertical: sceneAssets.flipVertical,
       collisionUrl: sceneAssets.collisionUrl,
       navmeshUrl: sceneAssets.navmeshUrl,
+      runtimeUrl: latestVersion?.runtimeUrl,
+      behaviorTreeUrl: latestVersion?.behaviorTreeUrl,
+      npcArchetypes: latestVersion?.npcArchetypes ?? [],
+      objective: latestVersion?.objective,
       versionCount: project.versions.length,
       mechanics,
       generationStep:
@@ -288,18 +341,28 @@ function bindEvents() {
     }
 
     const project = getActiveProject();
-    if (uploadedModelUrl.startsWith('blob:')) {
-      URL.revokeObjectURL(uploadedModelUrl);
-    }
-
-    uploadedModelUrl = URL.createObjectURL(file);
     uploadedModelName = file.name;
     project.modelName = file.name;
-    project.modelUrl = uploadedModelUrl;
     project.modelSource = 'uploaded';
     project.updatedAt = new Date().toISOString();
     currentView = 'studio';
     saveProjects();
+    const uploadPromise = uploadProjectAsset(project.id, file).then((result) => {
+      const active = getActiveProject();
+      active.modelName = result.project.modelName;
+      active.modelUrl = result.project.modelUrl;
+      active.modelSource = result.project.modelSource;
+      active.updatedAt = result.project.updatedAt;
+      saveProjects();
+    }).catch((error) => {
+      console.error(error);
+    });
+    pendingUploadPromise = uploadPromise.finally(() => {
+      pendingUploadPromise = undefined;
+      if (currentView === 'studio') {
+        render();
+      }
+    });
     render();
   });
 
@@ -310,10 +373,15 @@ function bindEvents() {
       return;
     }
 
-    project.status = 'published';
-    project.updatedAt = new Date().toISOString();
-    saveProjects();
-    render();
+    void publishProject(project.id)
+      .then((result) => {
+        applyServerProject(result.project, result.version);
+        saveProjects();
+        render();
+      })
+      .catch((error) => {
+        console.error(error);
+      });
   });
 
   document.querySelector('[data-action="new-project"]')?.addEventListener('click', () => {
@@ -362,12 +430,12 @@ function bindEvents() {
 
   document.querySelectorAll<HTMLButtonElement>('[data-project-id]').forEach((button) => {
     button.addEventListener('click', () => {
-    activeProjectId = button.dataset.projectId ?? activeProjectId;
-    uploadedModelName = getActiveProject().modelSource === 'uploaded' ? getActiveProject().modelName : '';
-    uploadedModelUrl = getActiveProject().modelSource === 'uploaded' ? getActiveProject().modelUrl || '' : '';
-    generationState = 'ready';
-    activeGenerationStep = generationSteps.length;
-    currentView = 'studio';
+      activeProjectId = button.dataset.projectId ?? activeProjectId;
+      uploadedModelName = getActiveProject().modelSource === 'uploaded' ? getActiveProject().modelName : '';
+      uploadedModelUrl = getActiveProject().modelSource === 'uploaded' ? getActiveProject().modelUrl || '' : '';
+      generationState = 'ready';
+      activeGenerationStep = generationSteps.length;
+      currentView = 'studio';
       render();
     });
   });
@@ -375,13 +443,21 @@ function bindEvents() {
 
 function startGeneration(prompt: string) {
   clearGenerationTimers();
+  const token = ++generationToken;
   generationState = 'working';
   activeGenerationStep = 0;
   currentView = 'studio';
   render();
 
+  const buildPromise = generateGame(prompt, token).catch((error) => {
+    console.error(error);
+    return null;
+  });
   generationSteps.forEach((_, index) => {
     const timer = window.setTimeout(() => {
+      if (token !== generationToken) {
+        return;
+      }
       activeGenerationStep = index;
       refreshGenerationProgress();
     }, index * 620);
@@ -389,11 +465,20 @@ function startGeneration(prompt: string) {
   });
 
   const finishTimer = window.setTimeout(() => {
-    generateGame(prompt);
-    generationState = 'ready';
-    activeGenerationStep = generationSteps.length;
-    clearGenerationTimers();
-    render();
+    void buildPromise.then((result) => {
+      if (token !== generationToken) {
+        return;
+      }
+
+      if (result) {
+        applyBuildResult(result);
+      }
+
+      generationState = 'ready';
+      activeGenerationStep = generationSteps.length;
+      clearGenerationTimers();
+      render();
+    });
   }, generationSteps.length * 620 + 120);
   generationTimers.push(finishTimer);
 }
@@ -401,6 +486,49 @@ function startGeneration(prompt: string) {
 function clearGenerationTimers() {
   generationTimers.forEach((timer) => window.clearTimeout(timer));
   generationTimers = [];
+}
+
+function applyBuildResult(result: WorkspaceGenerationResult) {
+  const project = getActiveProject();
+  project.prompt = result.project.prompt;
+  project.name = result.project.name;
+  project.modelName = result.project.modelName;
+  project.modelUrl = result.project.modelUrl;
+  project.modelSource = result.project.modelSource;
+  project.status = result.project.status;
+  project.updatedAt = result.project.updatedAt;
+  project.publishedUrl = result.project.publishedUrl;
+  project.versions = [normalizeVersion(result.version), ...project.versions.filter((item) => item.id !== result.version.id)];
+  uploadedModelName = project.modelSource === 'uploaded' ? project.modelName : '';
+  uploadedModelUrl = project.modelSource === 'uploaded' ? project.modelUrl || '' : '';
+  saveProjects();
+}
+
+function applyServerProject(project: WorkspaceProjectRecord, version?: GameVersion) {
+  const active = getActiveProject();
+  active.prompt = project.prompt;
+  active.name = project.name;
+  active.modelName = project.modelName;
+  active.modelUrl = project.modelUrl;
+  active.modelSource = project.modelSource;
+  active.status = project.status;
+  active.updatedAt = project.updatedAt;
+  active.publishedUrl = project.publishedUrl;
+  if (version) {
+    active.versions = [normalizeVersion(version), ...active.versions.filter((item) => item.id !== version.id)];
+  } else if (project.runs?.length) {
+    active.versions = project.runs.map(normalizeVersion);
+  }
+  uploadedModelName = active.modelSource === 'uploaded' ? active.modelName : '';
+  uploadedModelUrl = active.modelSource === 'uploaded' ? active.modelUrl || '' : '';
+}
+
+function normalizeVersion(version: GameVersion): GameVersion {
+  return {
+    ...version,
+    mechanics: Array.isArray(version.mechanics) ? version.mechanics : [],
+    npcArchetypes: Array.isArray(version.npcArchetypes) ? version.npcArchetypes : [],
+  };
 }
 
 function refreshGenerationProgress() {
@@ -426,32 +554,71 @@ function refreshGenerationProgress() {
   });
 }
 
-function generateGame(prompt: string) {
+async function generateGame(prompt: string, token: number) {
   const project = getActiveProject();
-  const now = new Date().toISOString();
-  const usingBuiltIn = !uploadedModelName && project.modelSource !== 'uploaded';
-  const modelName = usingBuiltIn ? builtInTestScene.name : uploadedModelName || project.modelName;
-  const modelUrl = usingBuiltIn ? builtInTestScene.sourceUrl : resolveSceneAssets(project).sourceUrl;
-  const versionNumber = project.versions.length + 1;
-  const title = extractTitle(prompt);
-  const version: GameVersion = {
-    id: crypto.randomUUID(),
-    title,
-    summary: `${title} uses ${modelName} as the Gaussian scene source with collision, Recast navigation, AI enemies, and a browser share build.`,
-    mechanics: buildMechanics(prompt),
-    shareUrl: `https://agent.games/play/${project.id.slice(0, 8)}-v${versionNumber}`,
-    createdAt: now,
-  };
+  const uploadPromise = pendingUploadPromise;
+  if (uploadPromise) {
+    await uploadPromise.catch(() => undefined);
+  }
 
-  project.prompt = prompt;
-  project.name = title;
-  project.modelName = modelName;
-  project.modelUrl = modelUrl;
-  project.modelSource = usingBuiltIn ? 'builtin' : 'uploaded';
-  project.status = 'generated';
-  project.updatedAt = now;
-  project.versions = [version, ...project.versions];
-  saveProjects();
+  const response = await fetch(`/api/projects/${encodeURIComponent(project.id)}/generate`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      prompt,
+      name: project.name,
+      modelName: project.modelName,
+      modelSource: project.modelSource,
+      modelUrl: project.modelUrl,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Generation request failed with ${response.status}.`);
+  }
+
+  const result = (await response.json()) as WorkspaceGenerationResult;
+  if (token !== generationToken) {
+    return result;
+  }
+
+  applyBuildResult(result);
+  return result;
+}
+
+async function uploadProjectAsset(projectId: string, file: File) {
+  const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/upload`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': file.type || 'application/octet-stream',
+      'x-filename': file.name,
+    },
+    body: file,
+  });
+
+  if (!response.ok) {
+    throw new Error(`Upload failed with ${response.status}.`);
+  }
+
+  return (await response.json()) as { project: WorkspaceProjectRecord };
+}
+
+async function publishProject(projectId: string) {
+  const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/publish`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({}),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Publish failed with ${response.status}.`);
+  }
+
+  return (await response.json()) as WorkspacePublishResult;
 }
 
 function coverCard(game: ShowcaseGame, index: number, size: 'large' | 'small') {
@@ -475,7 +642,8 @@ function generatedCard(project: Project, index: number) {
   const latest = project.versions[0];
   return `
     <button class="game-card small generated-cover" data-project-id="${project.id}" style="--delay:${index * 42}ms">
-      <div class="cover-art">
+      <div class="cover-art generated-art ${latest?.snapshotUrl ? 'has-snapshot' : ''}">
+        ${latest?.snapshotUrl ? `<img class="generated-snapshot" src="${h(latest.snapshotUrl)}" alt="" aria-hidden="true" />` : ''}
         <div class="cover-shape shape-a"></div>
         <div class="cover-shape shape-b"></div>
         <div class="cover-title">${h(project.name)}</div>
@@ -584,7 +752,7 @@ function studioView(project: Project, latestVersion: GameVersion | undefined, me
           <code>${h(generatedAssetPaths(project))}</code>
         </div>
         <div class="audit-list" aria-label="Generation implementation audit">
-          ${generationAuditRows().map((item) => `
+          ${generationAuditRows(project, latestVersion).map((item) => `
             <div class="${item.status}">
               <span>${h(item.statusLabel)}</span>
               <strong>${h(item.label)}</strong>
@@ -614,16 +782,29 @@ function studioView(project: Project, latestVersion: GameVersion | undefined, me
 }
 
 function previewCanvasPanel(project: Project, latestVersion: GameVersion | undefined) {
-  const previewStyle = ` style="--preview-image: url('${builtInTestScene.previewImageUrl}')"`;
-
   return `
-    <section class="preview-card inline-preview" aria-label="Live PlayCanvas generation preview"${previewStyle}>
+    <section class="preview-card inline-preview" aria-label="Live PlayCanvas generation preview">
+      <div class="preview-placeholder" aria-hidden="true">
+        <span class="scan-plane plane-a"></span>
+        <span class="scan-plane plane-b"></span>
+        <span class="scan-ridge ridge-a"></span>
+        <span class="scan-ridge ridge-b"></span>
+        <span class="scan-point point-a"></span>
+        <span class="scan-point point-b"></span>
+        <span class="scan-point point-c"></span>
+        <span class="scan-point point-d"></span>
+      </div>
       <canvas id="preview-canvas" aria-label="Generated game preview"></canvas>
       <div class="preview-badge">PlayCanvas preview</div>
       <div class="preview-load" data-preview-status>Preparing PlayCanvas scene</div>
       <div class="preview-title">
         <span>${generationState === 'working' ? h(generationSteps[activeGenerationStep]?.label ?? 'Generating') : statusLabel(project.status)}</span>
         <strong>${h(latestVersion?.title ?? 'Creating 3D scene')}</strong>
+      </div>
+      <div class="runtime-hud" aria-label="Playable runtime status">
+        <span data-runtime-status>${generationState === 'working' ? 'Building runtime' : 'WASD move · drag look · space tag'}</span>
+        <strong data-runtime-objective>${h(latestVersion?.objective ?? 'Reach the energy core')}</strong>
+        <em data-runtime-enemies>${h(runtimeEnemyLabel(latestVersion))}</em>
       </div>
     </section>
   `;
@@ -718,14 +899,23 @@ function sceneSourceLabel(project: Project) {
 }
 
 function sceneSourcePath(project: Project) {
+  if (project.modelUrl?.startsWith('/workspace/')) {
+    return project.modelUrl;
+  }
+
   if (project.modelSource === 'uploaded' && project.modelName) {
-    return 'Browser upload, used for this generation session';
+    return 'Browser upload, copied into workspace for this generation session';
   }
 
   return builtInTestScene.path;
 }
 
 function generatedAssetSummary(project: Project) {
+  const latest = project.versions[0];
+  if (latest?.streamedUrl && latest.collisionUrl && latest.navmeshUrl) {
+    return `${latest.streamedUrl.split('/').pop()} + ${latest.collisionUrl.split('/').pop()} + ${latest.navmeshUrl.split('/').pop()} + gameplay-runtime.json`;
+  }
+
   const stem = project.modelSource === 'uploaded' && project.modelName
     ? project.modelName.replace(/\.[^.]+$/, '')
     : builtInTestScene.id;
@@ -734,6 +924,11 @@ function generatedAssetSummary(project: Project) {
 }
 
 function generatedAssetPaths(project: Project) {
+  const latest = project.versions[0];
+  if (latest?.streamedUrl && latest.collisionUrl && latest.navmeshUrl) {
+    return `${latest.streamedUrl} | ${latest.collisionUrl} | ${latest.navmeshUrl} | ${latest.runtimeUrl || 'gameplay-runtime.json'} | ${latest.behaviorTreeUrl || 'behavior-tree.json'}`;
+  }
+
   if (project.modelSource === 'uploaded' && project.modelName) {
     const stem = project.modelName.replace(/\.[^.]+$/, '');
     return `${stem}.sog | ${stem}.collision.glb | navmesh.bin`;
@@ -742,61 +937,81 @@ function generatedAssetPaths(project: Project) {
   return `${builtInTestScene.streamedPath} | ${builtInTestScene.collisionPath} | ${builtInTestScene.navmeshPath}`;
 }
 
-function generationAuditRows() {
+function runtimeEnemyLabel(latestVersion: GameVersion | undefined) {
+  const count = latestVersion?.npcArchetypes?.length || 8;
+  return `${count} AI patrols armed`;
+}
+
+function generationAuditRows(project: Project, latestVersion: GameVersion | undefined) {
+  const hasStream = Boolean(latestVersion?.streamedUrl);
+  const hasCollision = Boolean(latestVersion?.collisionUrl);
+  const hasNavmesh = Boolean(latestVersion?.navmeshUrl);
+  const hasNpcPlan = Boolean(latestVersion?.npcArchetypes?.length);
+  const hasRuntime = Boolean(latestVersion?.runtimeUrl && latestVersion?.behaviorTreeUrl);
   return [
     {
-      status: 'ready',
-      statusLabel: 'Ready',
+      status: hasStream ? 'ready' : 'pending',
+      statusLabel: hasStream ? 'Ready' : 'Pending',
       label: 'SOG / preview package',
-      detail: 'The built-in PLY has been converted into SOG plus a PlayCanvas-readable preview package.',
+      detail: hasStream
+        ? 'The source scan has been converted into a streamed SOG package and PlayCanvas preview bundle.'
+        : 'The source scan will be converted into a streamed SOG package and PlayCanvas-readable preview bundle.',
     },
     {
-      status: 'ready',
-      statusLabel: 'Ready',
+      status: hasCollision ? 'ready' : 'pending',
+      statusLabel: hasCollision ? 'Ready' : 'Pending',
       label: 'Collision GLB',
-      detail: 'splat-transform emitted 23ebe85c.collision.glb from the source splat.',
+      detail: hasCollision
+        ? 'splat-transform emitted the collision GLB from the source splat.'
+        : 'splat-transform will emit the collision GLB from the source splat.',
     },
     {
-      status: 'pending',
-      statusLabel: 'Pending',
+      status: hasNavmesh ? 'ready' : 'pending',
+      statusLabel: hasNavmesh ? 'Ready' : 'Pending',
       label: 'Recast navmesh.bin',
-      detail: 'The UI shows the step, but navmesh.bin has not been generated yet.',
+      detail: hasNavmesh
+        ? 'Recast generated the binary navigation mesh for runtime pathfinding.'
+        : 'Recast will generate navmesh.bin for runtime pathfinding.',
     },
     {
-      status: 'pending',
-      statusLabel: 'Pending',
+      status: hasNpcPlan ? 'ready' : 'pending',
+      statusLabel: hasNpcPlan ? 'Ready' : 'Pending',
       label: 'NPC / character generation',
-      detail: 'The prompt asks for eight AI enemies; no real character assets or behavior tree are spawned yet.',
+      detail: hasNpcPlan
+        ? 'The LLM produced eight NPC archetypes with roles, patrols, and behaviors.'
+        : 'The prompt asks for eight AI enemies; the NPC plan is still being produced.',
+    },
+    {
+      status: hasRuntime ? 'ready' : 'pending',
+      statusLabel: hasRuntime ? 'Ready' : 'Pending',
+      label: 'Playable runtime',
+      detail: hasRuntime
+        ? 'Generated gameplay-runtime.json and behavior-tree.json for player controls, objectives, and NPC states.'
+        : 'The runtime spec will define controls, objectives, NPC routes, and behavior-tree state transitions.',
     },
   ];
 }
 
-function resolveSceneAssets(project: Project) {
-  if (project.modelSource === 'uploaded') {
-    const sourceUrl = uploadedModelUrl || project.modelUrl || builtInTestScene.sourceUrl;
-    const uploadedIsBuiltIn =
-      project.modelName === builtInTestScene.name || sourceUrl.includes('/data/23ebe85c/');
-    const uploadedIsStreamable = /\.(sog|ply)$/i.test(project.modelName);
-
+function resolveSceneAssets(project: Project, latestVersion: GameVersion | undefined, state: typeof generationState) {
+  if (latestVersion?.streamedUrl) {
     return {
-      sourceUrl,
-      streamedUrl: uploadedIsBuiltIn
-        ? builtInTestScene.previewUrl
-        : uploadedIsStreamable
-          ? sourceUrl
-          : builtInTestScene.streamedUrl,
-      collisionUrl: builtInTestScene.collisionUrl,
-      navmeshUrl: builtInTestScene.navmeshUrl,
-      flipVertical: uploadedIsBuiltIn,
+      sourceUrl: latestVersion.sourceUrl || project.modelUrl || builtInTestScene.sourceUrl,
+      streamedUrl: latestVersion.streamedUrl,
+      fallbackUrl: latestVersion.sourceUrl || project.modelUrl || builtInTestScene.sourceUrl,
+      collisionUrl: latestVersion.collisionUrl || '',
+      navmeshUrl: latestVersion.navmeshUrl || '',
+      flipVertical: project.modelSource === 'builtin' || project.modelName === builtInTestScene.name,
     };
   }
 
+  const fallbackUrl = project.modelUrl || builtInTestScene.sourceUrl;
   return {
-    sourceUrl: project.modelUrl || builtInTestScene.sourceUrl,
-    streamedUrl: builtInTestScene.previewUrl,
+    sourceUrl: fallbackUrl,
+    streamedUrl: state === 'working' ? fallbackUrl : builtInTestScene.sourceUrl,
+    fallbackUrl,
     collisionUrl: builtInTestScene.collisionUrl,
     navmeshUrl: builtInTestScene.navmeshUrl,
-    flipVertical: true,
+    flipVertical: project.modelSource === 'builtin' || project.modelName === builtInTestScene.name,
   };
 }
 
