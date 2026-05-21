@@ -11,8 +11,8 @@ import { generateSoloNavMesh } from 'recast-navigation/generators';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const workspaceRoot = join(root, 'workspace');
-const builtInSceneRoot = join(root, 'data', '23ebe85c');
-const builtInSource = join(builtInSceneRoot, '23ebe85c.ply');
+const builtInSceneRoot = join(root, 'data', '96fe38b6');
+const builtInSource = join(builtInSceneRoot, '96fe38b6.ply');
 const piSystemPrompt = [
   'You design browser FPS games built from Gaussian splat scenes.',
   'Return strict JSON with keys:',
@@ -221,11 +221,17 @@ async function generateWorkspaceBuild(projectId, payload) {
   const snapshotPath = join(runDir, 'snapshot.svg');
   const publishPath = join(publishDir, 'index.html');
 
-  const useBuiltInAssets = sourceRecord.kind === 'builtin' && runSourceName === '23ebe85c.ply';
-  if (useBuiltInAssets) {
-    await fs.copyFile(join(builtInSceneRoot, '23ebe85c.sog'), streamedPath);
-    await fs.copyFile(join(builtInSceneRoot, '23ebe85c.voxel.json'), voxelPath);
-    await fs.copyFile(join(builtInSceneRoot, '23ebe85c.collision.glb'), collisionPath);
+  const useBuiltInAssets = sourceRecord.kind === 'builtin' && runSourceName === '96fe38b6.ply';
+  const builtInArtifacts = [
+    join(builtInSceneRoot, '96fe38b6.sog'),
+    join(builtInSceneRoot, '96fe38b6.voxel.json'),
+    join(builtInSceneRoot, '96fe38b6.collision.glb'),
+  ];
+  const hasBuiltInArtifacts = builtInArtifacts.every((assetPath) => existsSync(assetPath));
+  if (useBuiltInAssets && hasBuiltInArtifacts) {
+    await fs.copyFile(join(builtInSceneRoot, '96fe38b6.sog'), streamedPath);
+    await fs.copyFile(join(builtInSceneRoot, '96fe38b6.voxel.json'), voxelPath);
+    await fs.copyFile(join(builtInSceneRoot, '96fe38b6.collision.glb'), collisionPath);
     await generateNavmesh(collisionPath, navmeshPath);
   } else {
     await runSplatTransform(runSourcePath, streamedPath, previewMetaPath, voxelPath);
@@ -374,7 +380,7 @@ async function ensureSourceForProject(projectId, manifest) {
     throw new Error(`Built-in test PLY not found: ${builtInSource}`);
   }
 
-  const fileName = '23ebe85c.ply';
+  const fileName = '96fe38b6.ply';
   const path = join(sourceDir, fileName);
   if (!existsSync(path)) {
     await fs.copyFile(builtInSource, path);

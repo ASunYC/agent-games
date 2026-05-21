@@ -30,12 +30,12 @@ published HTML files.
 The built-in test scene lives at:
 
 ```text
-data/23ebe85c/23ebe85c.ply
+data/96fe38b6/96fe38b6.ply
 ```
 
 If the user clicks `Generate game` without uploading a model, the project copies
 that built-in PLY into the current project workspace and uses the precomputed
-SOG, voxel JSON, and collision GLB from `data/23ebe85c`. It then creates a
+SOG, voxel JSON, and collision GLB from `data/96fe38b6` when available. It then creates a
 Recast `navmesh.bin` for the generated run.
 
 ## Workflow
@@ -149,15 +149,15 @@ npm run build:splat-assets
 ```
 
 This uses `@playcanvas/splat-transform` through `npx` and writes ignored local
-artifacts next to `data/23ebe85c/23ebe85c.ply`.
+artifacts next to `data/96fe38b6/96fe38b6.ply`.
 
 Expected local outputs include:
 
-- `data/23ebe85c/23ebe85c.sog`
-- `data/23ebe85c/23ebe85c.collision.glb`
-- `data/23ebe85c/23ebe85c.voxel.json`
-- `data/23ebe85c/preview/meta.json`
-- `data/23ebe85c/preview/*.webp`
+- `data/96fe38b6/96fe38b6.sog`
+- `data/96fe38b6/96fe38b6.collision.glb`
+- `data/96fe38b6/96fe38b6.voxel.json`
+- `data/96fe38b6/preview/meta.json`
+- `data/96fe38b6/preview/*.webp`
 
 ### 4. Verify
 
@@ -186,7 +186,7 @@ http://localhost:5176/#create
 ```
 
 Click `Generate game`. If no model is uploaded, the Create flow uses the built-in
-`23ebe85c.ply` test scene. The 3D preview appears first, then the generation
+`96fe38b6.ply` test scene. The 3D preview appears first, then the generation
 process resolves SOG, collision, navmesh, gameplay plan, NPC plan, and local
 publish artifacts.
 
@@ -196,7 +196,7 @@ publish artifacts.
 - Sky-blue visual theme and responsive layout
 - Natural-language prompt form
 - Upload support for `.ply`, `.sog`, `.spz`, and `.ksplat`
-- Built-in PLY fallback from `data/23ebe85c`
+- Built-in PLY fallback from `data/96fe38b6`
 - PlayCanvas Gaussian splat preview with mouse drag and wheel interaction
 - Local project API for ensure, upload, generate, publish, and asset serving
 - Per-project workspace folders with source and run artifacts

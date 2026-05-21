@@ -86,19 +86,19 @@ type WorkspacePublishResult = {
 
 const storageKey = 'agent-games-projects';
 const builtInTestScene = {
-  id: '23ebe85c',
-  name: '23ebe85c.ply',
-  sourceUrl: '/data/23ebe85c/23ebe85c.ply',
-  streamedUrl: '/data/23ebe85c/23ebe85c.sog',
-  previewUrl: '/data/23ebe85c/preview/meta.json',
-  collisionUrl: '/data/23ebe85c/23ebe85c.collision.glb',
-  voxelUrl: '/data/23ebe85c/23ebe85c.voxel.json',
-  navmeshUrl: '/data/23ebe85c/navmesh.bin',
-  path: 'data/23ebe85c/23ebe85c.ply',
-  previewPath: 'data/23ebe85c/preview/meta.json',
-  streamedPath: 'data/23ebe85c/23ebe85c.sog',
-  collisionPath: 'data/23ebe85c/23ebe85c.collision.glb',
-  navmeshPath: 'data/23ebe85c/navmesh.bin',
+  id: '96fe38b6',
+  name: '96fe38b6.ply',
+  sourceUrl: '/data/96fe38b6/96fe38b6.ply',
+  streamedUrl: '/data/96fe38b6/96fe38b6.sog',
+  previewUrl: '/data/96fe38b6/preview/meta.json',
+  collisionUrl: '/data/96fe38b6/96fe38b6.collision.glb',
+  voxelUrl: '/data/96fe38b6/96fe38b6.voxel.json',
+  navmeshUrl: '/data/96fe38b6/navmesh.bin',
+  path: 'data/96fe38b6/96fe38b6.ply',
+  previewPath: 'data/96fe38b6/preview/meta.json',
+  streamedPath: 'data/96fe38b6/96fe38b6.sog',
+  collisionPath: 'data/96fe38b6/96fe38b6.collision.glb',
+  navmeshPath: 'data/96fe38b6/navmesh.bin',
 };
 const defaultPrompt =
   'Turn my abandoned building Gaussian splat into a browser FPS with exploration, collision, a navmesh, eight AI enemies, an energy-core objective, and a share link.';
@@ -110,7 +110,7 @@ const generationSteps: GenerationStep[] = [
   },
   {
     label: 'Select source splat',
-    detail: 'Use the uploaded PLY/SOG or the built-in 23ebe85c.ply test scan as the input.',
+    detail: 'Use the uploaded PLY/SOG or the built-in 96fe38b6.ply test scan as the input.',
   },
   {
     label: 'Run splat-transform',
@@ -183,6 +183,7 @@ let activeGenerationStep = 0;
 let generationTimers: number[] = [];
 let pendingUploadPromise: Promise<void> | undefined;
 let generationToken = 0;
+let previewFullscreen = false;
 
 render();
 
@@ -197,10 +198,18 @@ function loadProjects(): Project[] {
     const parsed = JSON.parse(raw) as Project[];
     return parsed.map((project) => ({
       ...project,
-      versions: Array.isArray(project.versions) ? project.versions.map((version) => normalizeVersion(version)) : [],
+      versions: shouldResetBuiltinProject(project)
+        ? []
+        : Array.isArray(project.versions)
+          ? project.versions.map((version) => normalizeVersion(version))
+          : [],
       modelName: isBuiltInSceneProject(project) ? builtInTestScene.name : project.modelName,
       modelSource: isBuiltInSceneProject(project) ? 'builtin' : project.modelSource,
-      modelUrl: project.modelUrl?.startsWith('blob:') ? '' : project.modelUrl,
+      modelUrl: project.modelUrl?.startsWith('blob:')
+        ? ''
+        : shouldResetBuiltinProject(project)
+          ? builtInTestScene.sourceUrl
+          : project.modelUrl,
     }));
   } catch {
     return [];
@@ -208,7 +217,65 @@ function loadProjects(): Project[] {
 }
 
 function isBuiltInSceneProject(project: Project) {
-  return project.modelName === builtInTestScene.name || Boolean(project.modelUrl?.includes('/data/23ebe85c/'));
+  return (
+    project.modelName === builtInTestScene.name ||
+    project.modelName === '23ebe85c.ply' ||
+    Boolean(project.modelUrl?.includes('/data/96fe38b6/')) ||
+    Boolean(project.modelUrl?.includes('/data/23ebe85c/'))
+  );
+}
+
+function shouldResetBuiltinProject(project: Project) {
+  if (project.modelSource !== 'builtin') {
+    return false;
+  }
+
+  if (
+    project.modelName === '23ebe85c.ply' ||
+    Boolean(project.modelUrl?.includes('/data/23ebe85c/'))
+  ) {
+    return true;
+  }
+
+  if (!Array.isArray(project.versions) || project.versions.length === 0) {
+    return false;
+  }
+
+  const hasLegacyAsset = project.versions.some((version) => {
+    const values = [
+      version.sourceUrl,
+      version.streamedUrl,
+      version.collisionUrl,
+      version.navmeshUrl,
+      version.runtimeUrl,
+      version.behaviorTreeUrl,
+      version.snapshotUrl,
+      version.publishUrl,
+      version.workspacePath,
+    ];
+
+    return values.some((value) => Boolean(value?.includes('/data/23ebe85c/') || value?.includes('23ebe85c')));
+  });
+
+  if (hasLegacyAsset) {
+    return true;
+  }
+
+  return !project.versions.some((version) => {
+    const values = [
+      version.sourceUrl,
+      version.streamedUrl,
+      version.collisionUrl,
+      version.navmeshUrl,
+      version.runtimeUrl,
+      version.behaviorTreeUrl,
+      version.snapshotUrl,
+      version.publishUrl,
+      version.workspacePath,
+    ];
+
+    return values.some((value) => Boolean(value?.includes(builtInTestScene.id)));
+  });
 }
 
 function saveProjects() {
@@ -439,6 +506,23 @@ function bindEvents() {
       render();
     });
   });
+
+  document.querySelector('[data-action="toggle-preview-fullscreen"]')?.addEventListener('click', () => {
+    previewFullscreen = !previewFullscreen;
+    render();
+  });
+
+  window.removeEventListener('keydown', handleStudioEscape);
+  window.addEventListener('keydown', handleStudioEscape);
+}
+
+function handleStudioEscape(event: KeyboardEvent) {
+  if (event.key !== 'Escape' || !previewFullscreen) {
+    return;
+  }
+
+  previewFullscreen = false;
+  render();
 }
 
 function startGeneration(prompt: string) {
@@ -698,6 +782,7 @@ function homeView(generatedShelf: Project[]) {
 function studioView(project: Project, latestVersion: GameVersion | undefined, mechanics: string[]) {
   const hasPreview = generationState === 'working' || generationState === 'ready';
   const commandLines = generationCommand(project);
+  const previewExpanded = previewFullscreen && hasPreview;
   return `
     <section class="studio-header" aria-label="Create studio introduction">
       <div class="studio-title">
@@ -716,7 +801,7 @@ function studioView(project: Project, latestVersion: GameVersion | undefined, me
       </div>
     </section>
 
-    <section class="studio-grid" aria-label="Create game controls">
+    <section class="studio-grid ${previewExpanded ? 'is-preview-expanded' : ''}" aria-label="Create game controls">
       <form class="creator-console studio-console" id="creator-form">
         <div class="create-copy">
           <span>Prompt</span>
@@ -733,9 +818,10 @@ function studioView(project: Project, latestVersion: GameVersion | undefined, me
             ${sparkIcon()} Generate game
           </button>
         </div>
-        ${hasPreview ? previewCanvasPanel(project, latestVersion) : waitingCanvasPanel()}
+        ${hasPreview ? previewCanvasPanel(project, latestVersion, previewExpanded) : waitingCanvasPanel()}
       </form>
 
+      ${previewExpanded ? '' : `
       <div class="pipeline-panel">
         <div class="create-copy">
           <span>Generation process</span>
@@ -765,8 +851,10 @@ function studioView(project: Project, latestVersion: GameVersion | undefined, me
           <pre>${h(commandLines)}</pre>
         </div>
       </div>
+      `}
     </section>
 
+    ${previewExpanded ? '' : `
     <section class="pipeline-rail" aria-label="Generation steps">
       <div class="pipeline-rail-head">
         <p class="kicker">Generation steps</p>
@@ -776,14 +864,15 @@ function studioView(project: Project, latestVersion: GameVersion | undefined, me
         ${generationSteps.map((step, index) => generationStepRow(step, index)).join('')}
       </ol>
     </section>
+    `}
 
-    ${hasPreview ? buildPanel(project, latestVersion, mechanics) : ''}
+    ${hasPreview && !previewExpanded ? buildPanel(project, latestVersion, mechanics) : ''}
   `;
 }
 
-function previewCanvasPanel(project: Project, latestVersion: GameVersion | undefined) {
+function previewCanvasPanel(project: Project, latestVersion: GameVersion | undefined, expanded: boolean) {
   return `
-    <section class="preview-card inline-preview" aria-label="Live PlayCanvas generation preview">
+    <section class="preview-card inline-preview ${expanded ? 'is-fullscreen' : ''}" aria-label="Live PlayCanvas generation preview">
       <div class="preview-placeholder" aria-hidden="true">
         <span class="scan-plane plane-a"></span>
         <span class="scan-plane plane-b"></span>
@@ -795,7 +884,13 @@ function previewCanvasPanel(project: Project, latestVersion: GameVersion | undef
         <span class="scan-point point-d"></span>
       </div>
       <canvas id="preview-canvas" aria-label="Generated game preview"></canvas>
-      <div class="preview-badge">PlayCanvas preview</div>
+      <div class="preview-controls">
+        <div class="preview-badge">PlayCanvas preview</div>
+        <button class="preview-expand-button" type="button" data-action="toggle-preview-fullscreen" aria-pressed="${expanded}">
+          ${expanded ? collapseIcon() : expandIcon()}
+          <span>${expanded ? 'Exit full screen' : 'Full screen'}</span>
+        </button>
+      </div>
       <div class="preview-load" data-preview-status>Preparing PlayCanvas scene</div>
       <div class="preview-title">
         <span>${generationState === 'working' ? h(generationSteps[activeGenerationStep]?.label ?? 'Generating') : statusLabel(project.status)}</span>
@@ -1134,4 +1229,12 @@ function uploadIcon() {
 
 function sparkIcon() {
   return icon('<path d="m12 3 1.8 5.1L19 10l-5.2 1.9L12 17l-1.8-5.1L5 10l5.2-1.9L12 3Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>');
+}
+
+function expandIcon() {
+  return icon('<path d="M8 4H4v4M16 4h4v4M20 16v4h-4M4 16v4h4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 9 4 4M20 4l-5 5M4 20l5-5M15 15l5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>');
+}
+
+function collapseIcon() {
+  return icon('<path d="M9 3v5H4M15 3v5h5M9 21v-5H4M15 21v-5h5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 9 9 4M20 4l-5 5M4 20l5-5M15 15l5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>');
 }

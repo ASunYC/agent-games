@@ -4,11 +4,11 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const sceneDir = join(root, 'data', '23ebe85c');
-const source = join(sceneDir, '23ebe85c.ply');
-const streamed = join(sceneDir, '23ebe85c.sog');
+const sceneDir = join(root, 'data', '96fe38b6');
+const source = join(sceneDir, '96fe38b6.ply');
+const streamed = join(sceneDir, '96fe38b6.sog');
 const previewMeta = join(sceneDir, 'preview', 'meta.json');
-const voxel = join(sceneDir, '23ebe85c.voxel.json');
+const voxel = join(sceneDir, '96fe38b6.voxel.json');
 
 if (!existsSync(source)) {
   throw new Error(`Built-in test PLY not found: ${source}`);
@@ -16,7 +16,7 @@ if (!existsSync(source)) {
 
 if (
   existsSync(streamed) &&
-  existsSync(join(sceneDir, '23ebe85c.collision.glb')) &&
+  existsSync(join(sceneDir, '96fe38b6.collision.glb')) &&
   existsSync(voxel) &&
   existsSync(previewMeta)
 ) {
