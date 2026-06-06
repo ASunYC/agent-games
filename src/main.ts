@@ -36,6 +36,13 @@ type GameVersion = {
   npcArchetypes?: Array<{ name: string; role: string; behavior: string }>;
   objective?: string;
   publishTag?: string;
+  assetStatus?: {
+    streamed?: boolean;
+    collision?: boolean;
+    navmesh?: boolean;
+    mode?: string;
+    warnings?: string[];
+  };
 };
 
 type ShowcaseGame = {
@@ -130,11 +137,11 @@ const generationSteps: GenerationStep[] = [
   },
   {
     label: 'Generate gameplay',
-    detail: 'Add FPS controls, mission rules, pickups, weapon logic, and UI states.',
+    detail: 'Add first-person movement, weapon recoil, hit feedback, mission rules, and UI states.',
   },
   {
-    label: 'Spawn NPCs',
-    detail: 'Place AI enemies, patrol routes, awareness states, and encounter pacing.',
+    label: 'Spawn humanoid NPCs',
+    detail: 'Load character rigs, place armed enemies, patrol routes, awareness states, and encounter pacing.',
   },
   {
     label: 'Publish build',
@@ -897,7 +904,7 @@ function previewCanvasPanel(project: Project, latestVersion: GameVersion | undef
         <strong>${h(latestVersion?.title ?? 'Creating 3D scene')}</strong>
       </div>
       <div class="runtime-hud" aria-label="Playable runtime status">
-        <span data-runtime-status>${generationState === 'working' ? 'Building runtime' : 'WASD move · drag look · space tag'}</span>
+        <span data-runtime-status>${generationState === 'working' ? 'Building runtime' : 'WASD move · mouse look · click/space fire'}</span>
         <strong data-runtime-objective>${h(latestVersion?.objective ?? 'Reach the energy core')}</strong>
         <em data-runtime-enemies>${h(runtimeEnemyLabel(latestVersion))}</em>
       </div>
@@ -978,7 +985,7 @@ function emptyRecommendation() {
 }
 
 function defaultMechanics() {
-  return ['FPS movement', 'Splat scene', 'Collision GLB', 'Recast navmesh', '8 AI NPCs', 'Share build'];
+  return ['FPS movement', 'Splat scene', 'Collision GLB', 'Recast navmesh', 'Humanoid NPCs', 'Weapon recoil', 'Share build'];
 }
 
 function sceneSourceLabel(project: Project) {
@@ -1007,6 +1014,10 @@ function sceneSourcePath(project: Project) {
 
 function generatedAssetSummary(project: Project) {
   const latest = project.versions[0];
+  if (latest?.assetStatus?.mode === 'source-preview') {
+    return `${latest.sourceUrl?.split('/').pop() || project.modelName || builtInTestScene.name} preview + lightweight navmesh.bin`;
+  }
+
   if (latest?.streamedUrl && latest.collisionUrl && latest.navmeshUrl) {
     return `${latest.streamedUrl.split('/').pop()} + ${latest.collisionUrl.split('/').pop()} + ${latest.navmeshUrl.split('/').pop()} + gameplay-runtime.json`;
   }
@@ -1020,6 +1031,10 @@ function generatedAssetSummary(project: Project) {
 
 function generatedAssetPaths(project: Project) {
   const latest = project.versions[0];
+  if (latest?.assetStatus?.mode === 'source-preview') {
+    return `${latest.sourceUrl || project.modelUrl || builtInTestScene.sourceUrl} | SOG pending | collision GLB pending | ${latest.navmeshUrl || 'navmesh.bin'} | ${latest.runtimeUrl || 'gameplay-runtime.json'}`;
+  }
+
   if (latest?.streamedUrl && latest.collisionUrl && latest.navmeshUrl) {
     return `${latest.streamedUrl} | ${latest.collisionUrl} | ${latest.navmeshUrl} | ${latest.runtimeUrl || 'gameplay-runtime.json'} | ${latest.behaviorTreeUrl || 'behavior-tree.json'}`;
   }
@@ -1034,23 +1049,26 @@ function generatedAssetPaths(project: Project) {
 
 function runtimeEnemyLabel(latestVersion: GameVersion | undefined) {
   const count = latestVersion?.npcArchetypes?.length || 8;
-  return `${count} AI patrols armed`;
+  return `${count} armed humanoid patrols`;
 }
 
 function generationAuditRows(project: Project, latestVersion: GameVersion | undefined) {
-  const hasStream = Boolean(latestVersion?.streamedUrl);
-  const hasCollision = Boolean(latestVersion?.collisionUrl);
-  const hasNavmesh = Boolean(latestVersion?.navmeshUrl);
+  const sourcePreview = latestVersion?.assetStatus?.mode === 'source-preview';
+  const hasStream = Boolean(latestVersion?.assetStatus ? latestVersion.assetStatus.streamed : latestVersion?.streamedUrl);
+  const hasCollision = Boolean(latestVersion?.assetStatus ? latestVersion.assetStatus.collision : latestVersion?.collisionUrl);
+  const hasNavmesh = Boolean(latestVersion?.assetStatus ? latestVersion.assetStatus.navmesh : latestVersion?.navmeshUrl);
   const hasNpcPlan = Boolean(latestVersion?.npcArchetypes?.length);
   const hasRuntime = Boolean(latestVersion?.runtimeUrl && latestVersion?.behaviorTreeUrl);
   return [
     {
-      status: hasStream ? 'ready' : 'pending',
-      statusLabel: hasStream ? 'Ready' : 'Pending',
-      label: 'SOG / preview package',
+      status: hasStream || sourcePreview ? 'ready' : 'pending',
+      statusLabel: hasStream ? 'Ready' : sourcePreview ? 'Preview' : 'Pending',
+      label: sourcePreview ? 'Source PLY preview' : 'SOG / preview package',
       detail: hasStream
         ? 'The source scan has been converted into a streamed SOG package and PlayCanvas preview bundle.'
-        : 'The source scan will be converted into a streamed SOG package and PlayCanvas-readable preview bundle.',
+        : sourcePreview
+          ? 'The source PLY is loaded directly while SOG and collision generation are pending precompute.'
+          : 'The source scan will be converted into a streamed SOG package and PlayCanvas-readable preview bundle.',
     },
     {
       status: hasCollision ? 'ready' : 'pending',
@@ -1073,8 +1091,8 @@ function generationAuditRows(project: Project, latestVersion: GameVersion | unde
       statusLabel: hasNpcPlan ? 'Ready' : 'Pending',
       label: 'NPC / character generation',
       detail: hasNpcPlan
-        ? 'The LLM produced eight NPC archetypes with roles, patrols, and behaviors.'
-        : 'The prompt asks for eight AI enemies; the NPC plan is still being produced.',
+        ? 'The LLM produced eight NPC archetypes, and the runtime loads humanoid rigs plus weapon feedback.'
+        : 'The prompt asks for eight AI enemies; the NPC plan and character loadout are still being produced.',
     },
     {
       status: hasRuntime ? 'ready' : 'pending',

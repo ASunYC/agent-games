@@ -1148,12 +1148,18 @@ h2 {
   min-height: 300px;
   height: 100%;
   cursor: grab;
-  opacity: 0;
+  opacity: 0.92;
   transition: opacity 420ms cubic-bezier(0.16, 1, 0.3, 1);
   touch-action: none;
 }
 
+.preview-card.is-loading #preview-canvas,
 .preview-card.is-live #preview-canvas {
+  opacity: 0.92;
+}
+
+#app .preview-card.is-loading canvas#preview-canvas,
+#app .preview-card.is-live canvas#preview-canvas {
   opacity: 0.92;
 }
 

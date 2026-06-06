@@ -68,6 +68,12 @@ The command emits a streamed SOG bundle plus collision outputs such as:
 - `scene.collision.glb`
 - voxel sidecars used by the collision pass
 
+For very large PLY inputs, the interactive Create flow keeps the UI responsive:
+if precomputed SOG/collision artifacts are missing, it opens the PlayCanvas
+preview against the source PLY, creates the gameplay runtime immediately, and
+writes a lightweight `navmesh.bin` proxy. Run `npm run build:splat-assets` when
+you want the full streamed SOG and collision GLB generated ahead of time.
+
 ## Workspace Layout
 
 Generated projects are written to ignored local folders:
@@ -204,7 +210,8 @@ publish artifacts.
 - Collision GLB output from the splat pipeline
 - Recast `navmesh.bin` generation
 - Pi agent planning integration with provider-key fallback
-- PlayCanvas runtime scaffold with player movement, objective HUD, NPC patrol/chase states, and tagging
+- PlayCanvas runtime with first-person movement, mouse look, procedural rifle, recoil, reload, hit feedback, and objective HUD
+- Local humanoid GLB loading for NPC patrol/chase/tagged states
 - Generated snapshot card for Home
 - Local publish output under `workspace/<projectId>/published`
 
@@ -219,17 +226,18 @@ Ready:
 - Generated plans, snapshots, manifests, and published HTML
 - Gameplay runtime specs and behavior-tree JSON for player/NPC preview state
 - PlayCanvas preview loading the generated SOG
+- Procedural first-person weapon viewmodel and local humanoid NPC assets
 
 Partially ready:
 
-- NPCs are spawned as PlayCanvas runtime markers with patrol/chase/tagged states
-- FPS gameplay is playable as an embedded preview scaffold with WASD movement, mouse look, tagging, ammo, and objective HUD
+- FPS gameplay is playable as an embedded preview with WASD movement, mouse look, firing, reload, ammo, hit feedback, and objective HUD
+- NPCs load local humanoid rigs when available, with marker fallback if a GLB fails to load
 - Collision GLB is produced and tracked, but not yet attached as a live rigid body
 - Recast navmesh uses a lightweight proxy when the full collision mesh is too large for the WASM generator
 
 Pending:
 
-- Production-quality character meshes, animation clips, weapons, pickups, and win-state presentation
+- Production-quality character animation blending, pickups, and win-state presentation
 - Full physics-backed collision response inside the PlayCanvas runtime
 - Runtime navmesh debug visualization and NPC path queries
 - Deployment to an external hosting target
@@ -264,6 +272,11 @@ Related upstream projects:
 - PlayCanvas `splat-transform`: [https://github.com/playcanvas/splat-transform](https://github.com/playcanvas/splat-transform)
 - Recast Navigation JS: [https://github.com/isaac-mason/recast-navigation-js](https://github.com/isaac-mason/recast-navigation-js)
 - Pi: [https://pi.dev/docs/latest](https://pi.dev/docs/latest)
+- Khronos glTF Sample Assets: [https://github.com/KhronosGroup/glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets)
+
+Local character test assets under `public/assets/characters/` come from the
+Khronos glTF sample asset collection and are used only as open, replaceable
+runtime placeholders for humanoid NPC loading.
 
 ## Notes
 

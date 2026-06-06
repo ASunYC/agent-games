@@ -13,10 +13,13 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const workspaceRoot = join(root, 'workspace');
 const builtInSceneRoot = join(root, 'data', '96fe38b6');
 const builtInSource = join(builtInSceneRoot, '96fe38b6.ply');
+const humanoidAssetUrl = '/assets/characters/CesiumMan.glb';
+const fallbackHumanoidAssetUrl = '/assets/characters/RiggedFigure.glb';
+const largeSplatThresholdBytes = 350 * 1024 * 1024;
 const piSystemPrompt = [
   'You design browser FPS games built from Gaussian splat scenes.',
   'Return strict JSON with keys:',
-  'title, summary, mechanics, npcArchetypes, objective, publishTag, snapshotCaption.',
+  'title, summary, mechanics, npcArchetypes, objective, publishTag, snapshotCaption, characterStyle, weaponStyle, combat.',
   'The mechanics value must be an array of short strings.',
   'The npcArchetypes value must be an array of objects with name, role, and behavior.',
 ].join(' ');
@@ -228,15 +231,20 @@ async function generateWorkspaceBuild(projectId, payload) {
     join(builtInSceneRoot, '96fe38b6.collision.glb'),
   ];
   const hasBuiltInArtifacts = builtInArtifacts.every((assetPath) => existsSync(assetPath));
-  if (useBuiltInAssets && hasBuiltInArtifacts) {
-    await fs.copyFile(join(builtInSceneRoot, '96fe38b6.sog'), streamedPath);
-    await fs.copyFile(join(builtInSceneRoot, '96fe38b6.voxel.json'), voxelPath);
-    await fs.copyFile(join(builtInSceneRoot, '96fe38b6.collision.glb'), collisionPath);
-    await generateNavmesh(collisionPath, navmeshPath);
-  } else {
-    await runSplatTransform(runSourcePath, streamedPath, previewMetaPath, voxelPath);
-    await generateNavmesh(collisionPath, navmeshPath);
-  }
+  const sceneAssets = await prepareSceneAssets({
+    runSourcePath,
+    streamedPath,
+    previewMetaPath,
+    voxelPath,
+    collisionPath,
+    navmeshPath,
+    useBuiltInAssets,
+    hasBuiltInArtifacts,
+  });
+  const sourceUrl = workspaceUrl(projectId, ['runs', runId, 'source', runSourceName]);
+  const streamedUrl = sceneAssets.streamed ? workspaceUrl(projectId, ['runs', runId, 'scene.sog']) : sourceUrl;
+  const collisionUrl = sceneAssets.collision ? workspaceUrl(projectId, ['runs', runId, 'scene.collision.glb']) : '';
+  const navmeshUrl = sceneAssets.navmesh ? workspaceUrl(projectId, ['runs', runId, 'navmesh.bin']) : '';
 
   const plan = await getGamePlan({
     prompt,
@@ -263,10 +271,10 @@ async function generateWorkspaceBuild(projectId, payload) {
     summary: plan.summary,
     snapshotUrl: workspaceUrl(projectId, ['runs', runId, 'snapshot.svg']),
     publishUrl: workspaceUrl(projectId, ['runs', runId, 'publish', 'index.html']),
-    sourceUrl: workspaceUrl(projectId, ['runs', runId, 'source', runSourceName]),
-    streamedUrl: workspaceUrl(projectId, ['runs', runId, 'scene.sog']),
-    collisionUrl: workspaceUrl(projectId, ['runs', runId, 'scene.collision.glb']),
-    navmeshUrl: workspaceUrl(projectId, ['runs', runId, 'navmesh.bin']),
+    sourceUrl,
+    streamedUrl,
+    collisionUrl,
+    navmeshUrl,
     runtimeUrl: workspaceUrl(projectId, ['runs', runId, 'gameplay-runtime.json']),
     behaviorTreeUrl: workspaceUrl(projectId, ['runs', runId, 'behavior-tree.json']),
     objective: plan.objective,
@@ -281,10 +289,10 @@ async function generateWorkspaceBuild(projectId, payload) {
     mechanics: plan.mechanics,
     shareUrl: workspaceUrl(projectId, ['runs', runId, 'publish', 'index.html']),
     createdAt: nowIso(),
-    sourceUrl: workspaceUrl(projectId, ['runs', runId, 'source', runSourceName]),
-    streamedUrl: workspaceUrl(projectId, ['runs', runId, 'scene.sog']),
-    collisionUrl: workspaceUrl(projectId, ['runs', runId, 'scene.collision.glb']),
-    navmeshUrl: workspaceUrl(projectId, ['runs', runId, 'navmesh.bin']),
+    sourceUrl,
+    streamedUrl,
+    collisionUrl,
+    navmeshUrl,
     runtimeUrl: workspaceUrl(projectId, ['runs', runId, 'gameplay-runtime.json']),
     behaviorTreeUrl: workspaceUrl(projectId, ['runs', runId, 'behavior-tree.json']),
     snapshotUrl: workspaceUrl(projectId, ['runs', runId, 'snapshot.svg']),
@@ -293,6 +301,7 @@ async function generateWorkspaceBuild(projectId, payload) {
     npcArchetypes: plan.npcArchetypes,
     objective: plan.objective,
     publishTag: plan.publishTag,
+    assetStatus: sceneAssets,
   };
 
   const nextManifest = {
@@ -405,22 +414,81 @@ async function ensureSourceForProject(projectId, manifest) {
   return source;
 }
 
-async function runSplatTransform(sourcePath, streamedPath, previewMetaPath, voxelPath) {
-  await runCommand('npx', [
-    '@playcanvas/splat-transform',
-    '-w',
-    sourcePath,
-    streamedPath,
-  ], getNodeOptionsEnv());
+async function prepareSceneAssets({
+  runSourcePath,
+  streamedPath,
+  previewMetaPath,
+  voxelPath,
+  collisionPath,
+  navmeshPath,
+  useBuiltInAssets,
+  hasBuiltInArtifacts,
+}) {
+  const status = {
+    streamed: false,
+    collision: false,
+    navmesh: false,
+    mode: 'pending',
+    warnings: [],
+  };
 
-  await runCommand('npx', [
-    '@playcanvas/splat-transform',
-    '-w',
-    sourcePath,
-    previewMetaPath,
-  ], getNodeOptionsEnv());
+  if (useBuiltInAssets && hasBuiltInArtifacts) {
+    await fs.copyFile(join(builtInSceneRoot, '96fe38b6.sog'), streamedPath);
+    await fs.copyFile(join(builtInSceneRoot, '96fe38b6.voxel.json'), voxelPath);
+    await fs.copyFile(join(builtInSceneRoot, '96fe38b6.collision.glb'), collisionPath);
+    await generateNavmesh(collisionPath, navmeshPath);
+    return {
+      ...status,
+      streamed: true,
+      collision: true,
+      navmesh: true,
+      mode: 'precomputed',
+    };
+  }
 
-  const voxelSuccess = await runCommand('npx', [
+  const sourceSize = (await fs.stat(runSourcePath)).size;
+  if (sourceSize > largeSplatThresholdBytes && process.env.AGENT_GAMES_FORCE_TRANSFORM !== '1') {
+    await generateDefaultNavmesh(navmeshPath);
+    return {
+      ...status,
+      navmesh: true,
+      mode: 'source-preview',
+      warnings: [
+        'PLY is large and precomputed SOG/collision assets were not found; using source PLY preview and lightweight navmesh.',
+      ],
+    };
+  }
+
+  try {
+    await runSplatTransform(runSourcePath, streamedPath, previewMetaPath, collisionPath);
+    status.streamed = existsSync(streamedPath);
+    status.collision = existsSync(collisionPath);
+    if (status.collision) {
+      await generateNavmesh(collisionPath, navmeshPath);
+      status.navmesh = existsSync(navmeshPath);
+    }
+    status.mode = status.streamed && status.collision ? 'generated' : 'partial';
+    if (!status.collision) {
+      await generateDefaultNavmesh(navmeshPath);
+      status.navmesh = true;
+      status.warnings.push('splat-transform finished without scene.collision.glb; generated a lightweight navmesh fallback.');
+    }
+    return status;
+  } catch (error) {
+    await generateDefaultNavmesh(navmeshPath);
+    return {
+      ...status,
+      streamed: existsSync(streamedPath),
+      collision: existsSync(collisionPath),
+      navmesh: existsSync(navmeshPath),
+      mode: 'fallback',
+      warnings: [error instanceof Error ? error.message : String(error)],
+    };
+  }
+}
+
+async function runSplatTransform(sourcePath, streamedPath, previewMetaPath, collisionPath) {
+  const primary = await runCommand('npx', [
     '@playcanvas/splat-transform',
     '-w',
     sourcePath,
@@ -431,10 +499,16 @@ async function runSplatTransform(sourcePath, streamedPath, previewMetaPath, voxe
     '--voxel-carve',
     '1.6,0.2',
     '-K',
-    voxelPath,
+    streamedPath,
   ], getNodeOptionsEnv());
 
-  if (voxelSuccess) {
+  if (primary.ok && existsSync(streamedPath) && existsSync(collisionPath)) {
+    await runCommand('npx', [
+      '@playcanvas/splat-transform',
+      '-w',
+      sourcePath,
+      previewMetaPath,
+    ], getNodeOptionsEnv());
     return;
   }
 
@@ -449,16 +523,22 @@ async function runSplatTransform(sourcePath, streamedPath, previewMetaPath, voxe
     '--voxel-carve',
     '2.4,0.3',
     '-K',
-    'faces',
-    voxelPath,
+    streamedPath,
   ], {
     ...getNodeOptionsEnv(),
     NODE_OPTIONS: '--max-old-space-size=8192',
   });
 
-  if (!retry) {
+  if (!retry.ok || !existsSync(streamedPath) || !existsSync(collisionPath)) {
     throw new Error('splat-transform failed to build the collision voxel output.');
   }
+
+  await runCommand('npx', [
+    '@playcanvas/splat-transform',
+    '-w',
+    sourcePath,
+    previewMetaPath,
+  ], getNodeOptionsEnv());
 }
 
 async function generateNavmesh(collisionPath, navmeshPath) {
@@ -550,7 +630,15 @@ async function generateNavmesh(collisionPath, navmeshPath) {
   await generateBoundsProxyNavmesh(bounds, navmeshPath, lastError);
 }
 
+async function generateDefaultNavmesh(navmeshPath) {
+  await generateBoundsProxyNavmesh({
+    min: [-10, 0, -10],
+    max: [10, 3.2, 10],
+  }, navmeshPath);
+}
+
 async function generateBoundsProxyNavmesh(bounds, navmeshPath, upstreamError = '') {
+  await ensureRecast();
   const proxy = createBoundsNavmeshProxy(bounds);
   let proxyResult;
   try {
@@ -739,6 +827,17 @@ async function getGamePlan({ prompt, sourceName, projectName, runId }) {
     objective: String(parsed.objective || fallback.objective),
     publishTag: String(parsed.publishTag || fallback.publishTag),
     snapshotCaption: String(parsed.snapshotCaption || fallback.snapshotCaption),
+    characterStyle: String(parsed.characterStyle || fallback.characterStyle || 'open-source humanoid rigs'),
+    weaponStyle: String(parsed.weaponStyle || fallback.weaponStyle || 'procedural first-person rifle viewmodel'),
+    combat: {
+      fireRate: Number(parsed.combat?.fireRate || fallback.combat.fireRate),
+      magazineSize: Number(parsed.combat?.magazineSize || fallback.combat.magazineSize),
+      reloadTime: Number(parsed.combat?.reloadTime || fallback.combat.reloadTime),
+      recoil: Number(parsed.combat?.recoil || fallback.combat.recoil),
+      hitRange: Number(parsed.combat?.hitRange || fallback.combat.hitRange),
+      hitRadius: Number(parsed.combat?.hitRadius || fallback.combat.hitRadius),
+      damage: Number(parsed.combat?.damage || fallback.combat.damage),
+    },
     provider: provider.provider,
     model: provider.model,
   };
@@ -749,7 +848,7 @@ function buildFallbackPlan(prompt, sourceName, projectName, runId) {
   const mechanics = buildMechanics(prompt);
   return {
     title,
-    summary: `${title} uses ${sourceName} as the world source, with collision, navmesh, NPC pacing, and a browser share build.`,
+    summary: `${title} uses ${sourceName} as the world source, with collision, navmesh, humanoid NPCs, a first-person weapon, and a browser share build.`,
     mechanics,
     npcArchetypes: expandNpcArchetypes([
       { name: 'Scout', role: 'Patrol', behavior: 'circle the main chamber and alert others on contact.' },
@@ -758,7 +857,18 @@ function buildFallbackPlan(prompt, sourceName, projectName, runId) {
     ]),
     objective: 'Reach the energy core and escape the building.',
     publishTag: 'local-preview',
-    snapshotCaption: 'PlayCanvas scene, collision, navmesh, and gameplay scaffold are ready.',
+    snapshotCaption: 'PlayCanvas scene, humanoid NPCs, weapon model, collision, and navmesh are ready.',
+    characterStyle: 'open-source humanoid rigs with tactical silhouettes',
+    weaponStyle: 'procedural first-person rifle viewmodel',
+    combat: {
+      fireRate: 7.8,
+      magazineSize: 24,
+      reloadTime: 1.7,
+      recoil: 0.23,
+      hitRange: 14,
+      hitRadius: 0.9,
+      damage: 25,
+    },
   };
 }
 
@@ -804,21 +914,47 @@ function buildGameplayRuntime(plan, runId) {
       health: 2,
     };
   });
+  const combat = plan.combat || {
+    fireRate: 7.8,
+    magazineSize: 24,
+    reloadTime: 1.7,
+    recoil: 0.23,
+    hitRange: 14,
+    hitRadius: 0.9,
+    damage: 25,
+  };
 
   return {
     id: `runtime-${runId}`,
-    camera: 'orbit-assisted-fps-preview',
+    camera: 'first-person-fps-preview',
     controls: {
       move: 'WASD / arrow keys',
       look: 'drag mouse',
       zoom: 'mouse wheel',
-      fire: 'space or click',
+      fire: 'space, click, or left mouse button',
+      reload: 'R',
     },
     player: {
       spawn: [0, 0.7, 7.8],
       speed: 4.2,
       health: 100,
-      ammo: 24,
+      ammo: combat.magazineSize,
+    },
+    assets: {
+      humanoidUrl: humanoidAssetUrl,
+      fallbackHumanoidUrl: fallbackHumanoidAssetUrl,
+      weaponStyle: 'procedural-fps-rifle',
+      playerScale: 1,
+      npcScale: 1,
+    },
+    combat: {
+      fireRate: combat.fireRate,
+      magazineSize: combat.magazineSize,
+      reloadTime: combat.reloadTime,
+      recoil: combat.recoil,
+      hitRange: combat.hitRange,
+      hitRadius: combat.hitRadius,
+      damage: combat.damage,
     },
     objective: {
       id: 'energy-core',
@@ -836,24 +972,29 @@ function buildBehaviorTree(plan, runtimeSpec) {
   return {
     id: `${runtimeSpec.id}-behavior-tree`,
     title: `${plan.title} behavior tree`,
-    blackboard: ['playerPosition', 'lastNoisePosition', 'energyCorePosition', 'alertLevel'],
+    blackboard: ['playerPosition', 'lastNoisePosition', 'energyCorePosition', 'alertLevel', 'health', 'lineOfSight'],
     root: {
       type: 'selector',
       children: [
         {
           type: 'sequence',
           name: 'Engage visible player',
-          children: ['hasLineOfSight', 'moveToPlayer', 'fireBurst', 'requestBackup'],
+          children: ['hasLineOfSight', 'closeDistance', 'fireBurst', 'requestBackup'],
+        },
+        {
+          type: 'sequence',
+          name: 'Take cover and flank',
+          children: ['lowHealth', 'chooseCover', 'flankPlayer', 'peekAndFire'],
         },
         {
           type: 'sequence',
           name: 'Investigate noise',
-          children: ['heardNoise', 'moveToLastNoise', 'scanArea'],
+          children: ['heardNoise', 'moveToLastNoise', 'scanArea', 'faceThreat'],
         },
         {
           type: 'sequence',
           name: 'Patrol route',
-          children: ['chooseNextWaypoint', 'followNavmeshPath', 'lookAround'],
+          children: ['chooseNextWaypoint', 'followNavmeshPath', 'lookAround', 'broadcastSightline'],
         },
       ],
     },
@@ -862,6 +1003,7 @@ function buildBehaviorTree(plan, runtimeSpec) {
       archetype: npc.role,
       route: npc.route,
       awarenessRadius: npc.awarenessRadius,
+      health: npc.health,
     })),
   };
 }
@@ -1218,7 +1360,9 @@ function sendJson(res, statusCode, payload) {
   res.end(JSON.stringify(payload));
 }
 
-async function runCommand(command, args, env = {}) {
+async function runCommand(command, args, options = {}) {
+  const env = options.env ? options.env : options;
+  const timeoutMs = Number(options.timeoutMs ?? 0);
   const shell = process.platform === 'win32';
   return new Promise((resolvePromise) => {
     const child = spawn(command, args, {
@@ -1233,6 +1377,22 @@ async function runCommand(command, args, env = {}) {
 
     let stdout = '';
     let stderr = '';
+    let settled = false;
+    const timeout = timeoutMs > 0
+      ? setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        child.kill('SIGTERM');
+        resolvePromise({
+          ok: false,
+          code: -1,
+          stdout,
+          stderr: `${stderr}\nCommand timed out after ${timeoutMs}ms.`,
+        });
+      }, timeoutMs)
+      : undefined;
 
     child.stdout?.on('data', (chunk) => {
       stdout += chunk.toString();
@@ -1241,6 +1401,13 @@ async function runCommand(command, args, env = {}) {
       stderr += chunk.toString();
     });
     child.on('close', (code) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timeout) {
+        clearTimeout(timeout);
+      }
       resolvePromise({
         ok: code === 0,
         code: code ?? -1,
@@ -1337,7 +1504,7 @@ function extractTitle(prompt) {
 
 function buildMechanics(prompt) {
   const lower = prompt.toLowerCase();
-  const mechanics = ['FPS movement', 'Splat scene', 'Collision GLB', 'Recast navmesh', '8 AI NPCs', 'Share build'];
+  const mechanics = ['FPS movement', 'Splat scene', 'Collision GLB', 'Recast navmesh', 'Humanoid NPCs', 'Weapon recoil', 'Share build'];
 
   if (lower.includes('collect') || prompt.includes('收集')) {
     mechanics.push('Collection objective');
